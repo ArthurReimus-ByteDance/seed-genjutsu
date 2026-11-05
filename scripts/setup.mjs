@@ -7,7 +7,8 @@ try {
   const password = randomBytes(24).toString("hex");
   const text = (await readFile(".env.example", "utf8"))
     .replaceAll("REPLACE_DB_PASSWORD", password)
-    .replace("REPLACE_SESSION_SECRET", randomBytes(48).toString("base64url"));
+    .replace("REPLACE_SESSION_SECRET", randomBytes(48).toString("base64url"))
+    .replace("MEDIA_ROOT=.data", "MEDIA_ROOT=" + process.cwd() + "/.data");
   await writeFile(".env.local", text, { mode: 0o600, flag: "wx" });
   console.log(
     "Created private .env.local with random database and session secrets.",

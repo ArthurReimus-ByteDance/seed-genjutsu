@@ -30,6 +30,7 @@ jobs:
       APP_URL: http://127.0.0.1:3107
       REGISTRATION_ENABLED: "true"
       STORAGE_MODE: local
+      MEDIA_ROOT: ${{ github.workspace }}/.data
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@v7

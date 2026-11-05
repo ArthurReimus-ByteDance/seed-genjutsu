@@ -47,7 +47,7 @@ npm run worker
 
 Open **http://localhost:3107**, create an account and upload your references. Local storage mode supports development, previews and job persistence. For live processing, set STORAGE_MODE=tos and add provider credentials.
 
-Setup creates random secrets and preserves an existing environment file. Local registration starts enabled. Before hosting, configure an invite code, create your accounts, then set REGISTRATION_ENABLED=false.
+Setup creates random secrets, writes an absolute media directory, and preserves an existing environment file. Local registration starts enabled. Before hosting, configure an invite code, create your accounts, then set REGISTRATION_ENABLED=false.
 
 ## Configuration
 
@@ -72,7 +72,7 @@ Setup creates random secrets and preserves an existing environment file. Local r
 | INVITE_CODE                                | Registration gate                                                   |
 | MAX_DAILY_JOBS, MAX_ACTIVE_JOBS            | Per-user job limits                                                 |
 
-Use a **public TOS endpoint** because fal.ai and browsers cannot access internal TOS URLs. Objects stay private, with signed GET access for six hours and AES256 server-side encryption requested on uploads. Configure bucket permissions accordingly. No AWS S3 service is required.
+Use a **public TOS endpoint** because fal.ai and browsers cannot access internal TOS URLs. Objects stay private, with signed GET access for six hours and AES256 server-side encryption requested on uploads. Configure bucket permissions accordingly. No AWS S3 service is required. When switching an existing local-only workspace to TOS, re-upload its references; local files are not automatically migrated.
 
 The Seedream 5.5 API ID has not been verified for this account. Its optional control stays disabled until explicitly configured and never silently falls back to another model.
 
@@ -88,7 +88,7 @@ npm run setup
 docker compose --env-file .env.local up --build -d
 ```
 
-Compose starts PostgreSQL 18, an idempotent migration, a web server and a separate worker, with persistent database and shared media-cache volumes. Port 3107 binds to loopback. Add an HTTPS reverse proxy and set APP_URL to its origin. Production cookies require HTTPS outside localhost.
+Compose starts PostgreSQL 18, an idempotent migration, a web server and a separate worker, with persistent database and shared media-cache volumes. Web and worker must share the same absolute MEDIA_ROOT; Compose sets /app/.data. Port 3107 binds to loopback. Add an HTTPS reverse proxy and set APP_URL to its origin. Production cookies require HTTPS outside localhost.
 
 The worker requires long-running Node and FFmpeg. A web-only Vercel deployment cannot run this complete architecture. Back up PostgreSQL and TOS, restrict provider keys, and configure media retention. This release is a private studio without billing or password-reset email.
 
