@@ -1,0 +1,60 @@
+name: Validate
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: recast
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: recast
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recast -d recast"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+    env:
+      DATABASE_URL: postgresql://recast:ci-only-password@localhost:5432/recast
+      SESSION_SECRET: ci-only-session-secret-with-at-least-32-characters
+      APP_URL: http://127.0.0.1:3107
+      REGISTRATION_ENABLED: "true"
+      STORAGE_MODE: local
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run lint && npm test
+      - run: npm run build && npm run typecheck
+      - name: Run actual application and worker smoke checks
+        env:
+          NODE_ENV: production
+        run: |
+          mkdir -p output
+          cp -r public .next/standalone/public
+          cp -r .next/static .next/standalone/.next/static
+          PORT=3107 HOSTNAME=127.0.0.1 node .next/standalone/server.js > output/web.log 2>&1 &
+          npm run worker > output/worker.log 2>&1 &
+          node --input-type=module -e 'for(let i=0;i<60;i++){try{const r=await fetch("http://127.0.0.1:3107/api/health");if(r.ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,1000))}process.exit(1)'
+          npm run smoke
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: runtime-checks
+          path: output/
