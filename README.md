@@ -28,33 +28,155 @@ Setup preserves an existing environment file and creates a private one when miss
 
 ## Workflow
 
+### Generation flow
+
+The masked performance guides motion and camera. The character image guides appearance, with an optional prepared scene as a second image reference.
+
 ```mermaid
 flowchart TD
-    V["Source performance"] --> PICK["Choose model<br/>Seedance 2 default: 4–15s, whole seconds<br/>Seedance 2.5: 4–30s"]
-    PICK --> T["Normalize selected clip + extract first frame"]
-    T --> TS["Private TOS + local cache"]
-    TS --> IN["Video-only MP4 copy<br/>Bounded inline input"]
-    IN --> SAM["Meta SAM 3.1 API<br/>Tracked boxes + masks"]
-    SUBJECT["Source subject phrase<br/>e.g. person in a black jacket"] -->|input_text| SAM
-    SAM --> MR["FFmpeg<br/>Neutral subject silhouette<br/>Preserve scene + 24 fps timing"]
-    C["Character image"] --> SD["Seedream 5.0 Pro<br/>First frame + character image"]
-    MR --> O{"Prepare scene look?"}
-    O -->|Yes| SD
-    O -->|Skip| G{"Review before generation?"}
-    SD --> G
-    G -->|Yes| R["Review prepared references"]
-    G -->|Automatic| VP["Virtual Portrait<br/>Signed masked-video URL from TOS<br/>CreateAsset → wait for Active"]
-    R -->|Approve| VP
-    VP --> ID["asset://ASSET_ID<br/>reference_video"]
-    ID --> S["Selected Seedance model<br/>2: reference generation · selected duration<br/>2.5: edit · adaptive duration"]
-    C -->|reference_image| S
-    SD -->|Additional reference_image| S
-    S -->|Keep original| A["Restore source soundtrack locally"]
-    A --> D["Persist in private TOS<br/>Review + download"]
-    S -->|Generate new| D
+    Clip("Selected source clip<br/>Seedance 2: 4–15 s · Seedance 2.5: 4–30 s")
+    Character("Character reference image")
+    Prep("Trim and normalize at 24 fps<br/>Extract the first frame")
+    Mask("Meta SAM 3.1 + FFmpeg<br/>Render a silent masked video")
+    Scene("Seedream 5.0 Pro<br/>Optional scene image")
+    Review("Review prepared references<br/>Manual approval by default")
+    Portrait("Register the masked video in Virtual Portrait<br/>Wait for the asset to become Active")
+    Seedance("Seedance 2 or 2.5")
+    Audio("Restore source audio if selected<br/>Otherwise keep generated audio")
+    Result("Save the MP4 to private TOS<br/>Preview or download")
+
+    Clip --> Prep --> Mask --> Review --> Portrait
+    Prep -.->|First frame| Scene
+    Character -.-> Scene
+    Scene -.-> Review
+    Portrait -->|asset://ASSET_ID · reference_video| Seedance
+    Character -->|Image 1 · reference_image| Seedance
+    Scene -.->|Image 2 · reference_image| Seedance
+    Seedance --> Audio --> Result
+
+    classDef step fill:#181818,stroke:#52525b,color:#fafafa
+    classDef generation fill:#18325c,stroke:#60a5fa,color:#f8fafc
+    class Clip,Character,Prep,Mask,Scene,Review,Portrait,Audio,Result step
+    class Seedance generation
 ```
 
-Scene-image preparation is optional. The original first frame is extracted before masking; its Seedream edit becomes an additional image reference. No LoRA stage is needed.
+### Architecture
+
+The web server and worker run on the same machine and coordinate through `MEDIA_ROOT`. This view shows live generation with private BytePlus TOS storage.
+
+```mermaid
+flowchart TB
+    Client["Browser or local API client"]
+
+    subgraph Local["Local studio"]
+        Web["Next.js web server<br/>Uploads, take API and media routes"]
+        State[("Shared MEDIA_ROOT<br/>JSON queue, mask checkpoints and media cache")]
+        Worker["Node worker + FFmpeg<br/>Prepare, mask and finish media"]
+        Web <-->|Media IDs and take state| State
+        State <-->|Claim work and save results| Worker
+    end
+
+    subgraph Hosted["Hosted services"]
+        TOS[("Private BytePlus TOS<br/>Uploads, prepared references and results")]
+        SAM["Meta SAM 3.1<br/>Subject tracking"]
+        Portrait["BytePlus Virtual Portrait<br/>Masked-video registration"]
+        Ark["BytePlus ModelArk<br/>DeepSeek, Seedream and Seedance"]
+    end
+
+    Client <-->|Loopback HTTP| Web
+    Web -->|Store uploads| TOS
+    Client -.->|Read signed media| TOS
+    Worker <-->|Read and store media| TOS
+    Worker <-->|Inline clip and streamed masks| SAM
+    Worker <-->|Signed masked-video URL and asset ID| Portrait
+    Worker <-->|Image and video generation| Ark
+    Web -.->|Optional prompt enhancement| Ark
+```
+
+### Data sequence
+
+This sequence follows a successful take. The client polls the take URL for progress, and reference review is enabled by default.
+
+```mermaid
+sequenceDiagram
+    actor Client as Studio client
+    participant Web as Next.js API
+    participant State as Local workspace
+    participant Worker as Node worker
+    participant TOS as Private TOS
+    participant SAM as Meta SAM
+    participant Models as BytePlus APIs
+
+    Client->>Web: POST /api/uploads<br/>Once per reference
+    Web->>TOS: Store private uploads
+    Web->>State: Record media IDs
+    Web-->>Client: 201 and upload IDs
+
+    opt Enhance direction
+        Client->>Web: POST /api/prompts/enhance
+        Web->>Models: Rewrite direction with DeepSeek
+        Models-->>Web: Suggested prompt
+        Web-->>Client: Editable suggestion
+    end
+
+    Client->>Web: POST /api/jobs<br/>IDs, trim, model and direction
+    Web->>State: Enqueue take
+    Web-->>Client: 202 and take URL
+    Worker->>State: Claim take with a lease
+    Worker->>Worker: Trim and normalize to 24 fps<br/>Extract first frame
+    Worker->>TOS: Store prepared clip and frame
+    Worker->>SAM: Send inline silent clip and subject phrase
+    SAM-->>Worker: Stream mask events
+    Worker->>State: Checkpoint completed masks
+    Worker->>Worker: Render silent masked video
+    Worker->>TOS: Store masked video
+
+    opt Prepare scene image
+        Worker->>Models: Seedream request with signed frame and character URLs
+        Models-->>Worker: Scene image
+        Worker->>TOS: Store prepared scene
+    end
+
+    opt Review before generation
+        Worker->>State: Set awaiting_approval
+        Client->>Web: GET /api/jobs/{id}
+        Web-->>Client: Status and review media URLs
+        Client->>Web: POST /api/jobs/{id}/approve
+        Web->>State: Queue registration
+    end
+
+    Worker->>Models: Virtual Portrait CreateAsset<br/>Signed masked-video URL
+    Models-->>Worker: Asset ID
+    Models->>TOS: Read masked video
+    loop Wait for Active
+        Worker->>Models: Virtual Portrait GetAsset
+        Models-->>Worker: Asset status
+    end
+
+    Worker->>Models: Create Seedance task<br/>Asset URI and signed image URLs
+    Models-->>Worker: Task ID
+    Models->>TOS: Read reference images
+    loop Poll until the task finishes
+        Worker->>Models: Get Seedance task status
+        Models-->>Worker: Status and video URL on success
+    end
+    Worker->>Worker: Download generated video
+    opt Keep original audio
+        Worker->>Worker: Restore audio from the prepared clip
+    end
+    Worker->>TOS: Store final MP4
+    Worker->>State: Save result ID and succeeded status
+    Client->>Web: GET /api/jobs/{id}
+    Web-->>Client: Result media URL
+    Client->>Web: GET /api/media/{id}
+    Web-->>Client: 307 redirect to signed TOS URL
+    Client->>TOS: Follow signed URL
+    TOS-->>Client: MP4 bytes
+```
+
+### Generation options
+
+Scene-image preparation is optional. The worker extracts the first frame of the selected clip before masking. The Seedream edit becomes an additional image reference.
 
 The shadcn model picker defaults new takes to **Seedance 2** for testing. Seedance 2 uses reference generation with a whole-second 4–15 second clip and explicit output duration; it omits the 2.5-only editing parameter. Seedance 2.5 uses the dedicated editing path with a 4–30 second clip, `omni_reference_task_type: edit`, and `duration: -1`. Switching to 2 shortens an oversized selection. Each take saves its model and resolved provider binding; history and variations retain the choice. Takes saved before this picker remain on 2.5. Both use adaptive aspect ratio and the approved Virtual Portrait video asset plus character image.
 
@@ -208,4 +330,4 @@ The current scope is explicitly local and single-user. [Future auth and database
 - [Sample asset provenance](docs/ui-preview.md#sample-asset-provenance): built-in image generation and FFmpeg fixtures, independent of live BytePlus generation.
 - The header and video model picker use the [BytePlus provider mark](https://sf-bpcms.bytepluscdn.com/obj/byteplus-public-aiso/portal/assets/apple-touch-icon.png) from the BytePlus website.
 
-The checkout, storage prefixes, preview header and Compose project retain their original internal identifiers to preserve existing references and volumes. The product name, browser metadata, worker labels and new downloads use Seed Genjutsu.
+The product name, browser metadata, worker labels and new downloads use Seed Genjutsu. Storage prefixes, the preview request header and the Compose project name preserve compatibility with existing references and volumes.
