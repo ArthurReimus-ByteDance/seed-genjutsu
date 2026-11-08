@@ -13,9 +13,29 @@ export class AppError extends Error {
 export const ok = (data: unknown, status = 200) =>
   NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 export function sameOrigin(request: Request) {
+  const configured = new URL(env.APP_URL);
+  const allowed = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  const target = new URL(request.url);
+  const host = new URL(
+    target.protocol + "//" + (request.headers.get("host") ?? target.host),
+  );
+  if (!allowed.has(host.hostname) || host.port !== configured.port)
+    throw new AppError(403, "LOCAL_ONLY", "Open this studio on localhost.");
   const origin = request.headers.get("origin");
+  let originAllowed = !origin;
+  if (origin) {
+    try {
+      const source = new URL(origin);
+      originAllowed =
+        allowed.has(source.hostname) &&
+        source.port === configured.port &&
+        source.protocol === configured.protocol;
+    } catch {
+      originAllowed = false;
+    }
+  }
   if (
-    (origin && origin !== new URL(env.APP_URL).origin) ||
+    !originAllowed ||
     request.headers.get("sec-fetch-site") === "cross-site"
   ) {
     throw new AppError(
@@ -25,8 +45,12 @@ export function sameOrigin(request: Request) {
     );
   }
 }
-export async function route(action: () => Promise<Response>) {
+export async function route(
+  action: () => Promise<Response>,
+  request?: Request,
+) {
   try {
+    if (request) sameOrigin(request);
     return await action();
   } catch (error) {
     if (error instanceof ZodError)

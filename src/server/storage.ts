@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile, stat, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, stat, rm, rename } from "node:fs/promises";
 import path from "node:path";
 import { TosClient, ACLType } from "@volcengine/tos-sdk";
 import { env } from "@/env";
-import { sql } from "./db";
+import { workspace, type StoredMedia } from "./workspace";
+export type { StoredMedia } from "./workspace";
 import { AppError } from "./http";
 import type { Upload } from "@/lib/schemas";
 
@@ -29,20 +30,7 @@ export function tos() {
 export async function storageCheck() {
   await tos().headBucket(env.TOS_BUCKET!);
 }
-export type MediaRow = {
-  id: string;
-  user_id: string;
-  kind: Upload["kind"];
-  name: string;
-  mime: string;
-  bytes: string;
-  width: number;
-  height: number;
-  duration: number | null;
-  storage_key: string;
-  poster_id: string | null;
-};
-export function publicUpload(row: MediaRow): Upload {
+export function publicUpload(row: StoredMedia): Upload {
   return {
     id: row.id,
     kind: row.kind,
@@ -56,39 +44,54 @@ export function publicUpload(row: MediaRow): Upload {
     posterUrl: row.poster_id ? "/api/media/" + row.poster_id : null,
   };
 }
-export async function ownedMedia(id: string, userId: string) {
-  const rows = await sql<MediaRow>(
-    "SELECT * FROM uploads WHERE id=$1 AND user_id=$2",
-    [id, userId],
-  );
-  if (!rows[0]) throw new AppError(404, "NOT_FOUND", "Media not found.");
-  return rows[0];
+export async function getMedia(id: string) {
+  return workspace.read((state) => {
+    const media = state.media[id];
+    if (!media) throw new AppError(404, "NOT_FOUND", "Media not found.");
+    return media;
+  });
 }
-export async function localPath(row: MediaRow) {
+export async function localPath(row: StoredMedia) {
   const file = path.join(mediaRoot, row.id);
+  const cached = await stat(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (cached?.isFile() && cached.size === row.bytes) return file;
+  if (env.STORAGE_MODE !== "tos")
+    throw new AppError(404, "FILE_MISSING", "Media file is unavailable.");
+  const result = await tos().getObjectV2({
+    bucket: env.TOS_BUCKET!,
+    key: row.storage_key,
+    dataType: "buffer",
+  });
+  const content = result.data.content;
+  if (!Buffer.isBuffer(content) || content.length !== row.bytes)
+    throw new AppError(
+      502,
+      "FILE_RECOVERY",
+      "Media could not be recovered from storage. Try again when storage is available.",
+    );
+  await mkdir(mediaRoot, { recursive: true });
+  const temporary = file + "." + randomUUID() + ".tmp";
   try {
-    await stat(file);
-  } catch {
-    if (env.STORAGE_MODE !== "tos")
-      throw new AppError(404, "FILE_MISSING", "Media file is unavailable.");
-    const result = await tos().getObjectV2({
-      bucket: env.TOS_BUCKET!,
-      key: row.storage_key,
-      dataType: "buffer",
-    });
-    await mkdir(mediaRoot, { recursive: true });
-    await writeFile(file, result.data.content, { mode: 0o600 });
+    // An immutable object can be recovered concurrently. Publish only complete
+    // private copies, so another reader never opens an in-progress cache write.
+    await writeFile(temporary, content, { mode: 0o600, flag: "wx" });
+    await rename(temporary, file);
+  } finally {
+    await rm(temporary, { force: true });
   }
   return file;
 }
-export async function providerUrl(row: MediaRow, download = false) {
+export async function providerUrl(row: StoredMedia, download = false) {
   if (env.STORAGE_MODE !== "tos")
     throw new AppError(
       503,
       "PUBLIC_STORAGE_REQUIRED",
       "Connect BytePlus TOS for signed provider references.",
     );
-  // Public endpoint: fal.ai and the browser cannot reach a TOS internal endpoint.
+  // Meta, BytePlus and the browser need the bucket's public TOS endpoint.
   return tos().getPreSignedUrl({
     bucket: env.TOS_BUCKET!,
     key: row.storage_key,
@@ -106,7 +109,7 @@ export async function providerUrl(row: MediaRow, download = false) {
   });
 }
 export async function deleteStoredMedia(
-  rows: Pick<MediaRow, "id" | "storage_key">[],
+  rows: Pick<StoredMedia, "id" | "storage_key">[],
 ) {
   if (rows.length && env.STORAGE_MODE === "tos") {
     const result = await tos().deleteMultiObjects({
@@ -121,7 +124,6 @@ export async function deleteStoredMedia(
   );
 }
 export async function saveMedia(input: {
-  userId: string;
   kind: Upload["kind"];
   name: string;
   mime: string;
@@ -132,7 +134,7 @@ export async function saveMedia(input: {
   posterId?: string;
 }) {
   const id = randomUUID();
-  const key = "recast-studio/" + input.userId + "/" + id;
+  const key = "recast-studio/local/" + id;
   await mkdir(mediaRoot, { recursive: true });
   await writeFile(path.join(mediaRoot, id), input.data, { mode: 0o600 });
   let uploaded = false;
@@ -149,23 +151,22 @@ export async function saveMedia(input: {
       });
       uploaded = true;
     }
-    const rows = await sql<MediaRow>(
-      "INSERT INTO uploads (id,user_id,kind,name,mime,bytes,width,height,duration,storage_key,poster_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *",
-      [
-        id,
-        input.userId,
-        input.kind,
-        input.name,
-        input.mime,
-        input.data.length,
-        input.width,
-        input.height,
-        input.duration ?? null,
-        key,
-        input.posterId ?? null,
-      ],
-    );
-    return rows[0];
+    const media: StoredMedia = {
+      id,
+      kind: input.kind,
+      name: input.name,
+      mime: input.mime,
+      bytes: input.data.length,
+      width: input.width,
+      height: input.height,
+      duration: input.duration ?? null,
+      storage_key: key,
+      poster_id: input.posterId ?? null,
+    };
+    await workspace.update((state) => {
+      state.media[id] = media;
+    });
+    return media;
   } catch (error) {
     await rm(path.join(mediaRoot, id), { force: true });
     if (uploaded)
@@ -175,5 +176,5 @@ export async function saveMedia(input: {
     throw error;
   }
 }
-export const mediaBytes = async (row: MediaRow) =>
+export const mediaBytes = async (row: StoredMedia) =>
   readFile(await localPath(row));

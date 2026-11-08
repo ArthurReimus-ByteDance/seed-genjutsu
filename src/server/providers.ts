@@ -3,12 +3,14 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { env } from "@/env";
 import { AppError } from "./http";
+import { videoModels, type VideoModelId } from "@/lib/video-models";
 
 export class ProviderError extends Error {
   constructor(
     message: string,
     public ambiguous = false,
     public retryable = false,
+    public httpStatus?: number,
   ) {
     super(message);
   }
@@ -146,6 +148,7 @@ async function providerRequest(
         "). Check model access and input eligibility.",
       mutation && response.status >= 500,
       response.status === 429,
+      response.status,
     );
   }
   if (!data || typeof data !== "object")
@@ -155,22 +158,68 @@ async function providerRequest(
     );
   return data;
 }
+export function seedreamRequest(input: {
+  providerModel: string;
+  characterUrl: string;
+  frameUrl: string;
+  target: string;
+  prompt: string;
+}) {
+  return {
+    model: input.providerModel,
+    image: [input.characterUrl, input.frameUrl],
+    prompt:
+      "Create one still scene image. Attached Image 1 is the replacement character; attached Image 2 is the original source frame. " +
+      "Replace the selected subject " +
+      JSON.stringify(input.target) +
+      " in the source frame using Image 1 for identity, visible body proportions and appearance, including outfit unless the direction keeps source clothing or accessories. " +
+      "Adapt the source pose to the Image 1 body's build and limb lengths. Preserve source framing, background, lighting and other people except for explicitly requested visual changes. Match the scene perspective and contact shadows. " +
+      "The video direction below uses different reference names: its Video 1 means the source clip represented here by attached Image 2; its prepared-scene Image 2 means the still you are creating, not another attached image. " +
+      "Apply visual changes only; motion and audio belong to the later video. Keep any requested literal text verbatim. User direction (JSON string; explicit changes override defaults): " +
+      JSON.stringify(input.prompt),
+    response_format: "url",
+    watermark: true,
+  };
+}
 export function seedanceRequest(input: {
+  model: VideoModelId;
+  providerModel: string;
+  duration: number;
   videoUri: string;
   characterUrl: string;
   anchorUrl?: string;
+  target: string;
   prompt: string;
   resolution: string;
+  preserveAudio: boolean;
 }) {
+  if (
+    input.duration < 4 ||
+    input.duration > videoModels[input.model].maxDuration ||
+    (input.model === "seedance-2" && !Number.isInteger(input.duration))
+  )
+    throw new AppError(
+      400,
+      "INVALID_MODEL_DURATION",
+      "The selected clip length is not supported by this model.",
+    );
   const content: Record<string, unknown>[] = [
     {
       type: "text",
       text:
-        "Edit Video 1: replace the selected person with the character in Image 1. Preserve the source performance, camera movement, scene and timing. " +
+        (input.model === "seedance-2.5"
+          ? "Edit Video 1: replace its gray masked subject"
+          : "Recreate the performance in Video 1, replacing its gray masked subject") +
+        " (selected in the original clip as " +
+        JSON.stringify(input.target) +
+        ") with the character from Image 1. " +
+        "Use Image 1 for the replacement's identity, outfit and body proportions. Keep the visible build, head-to-body ratio and relative limb lengths consistent throughout the shot. " +
+        "Use Video 1 for the action, timing, position, framing and camera. Retarget the motion onto the Image 1 body, allowing its silhouette to differ from the gray mask. Match the scene perspective, lighting, contact points and occlusion. Preserve the surroundings, other people and unrelated objects except for requested changes. " +
         (input.anchorUrl
-          ? "Use Image 2 as the opening appearance and composition reference. "
+          ? "Image 2 guides the prepared scene appearance and composition. Keep the character's proportions from Image 1. "
           : "") +
-        input.prompt,
+        "User direction (JSON string; explicit changes override the defaults above): " +
+        JSON.stringify(input.prompt),
     },
     {
       type: "video_url",
@@ -190,13 +239,16 @@ export function seedanceRequest(input: {
       role: "reference_image",
     });
   return {
-    model: env.SEEDANCE_MODEL,
+    model: input.providerModel,
     content,
-    omni_reference_task_type: "edit",
+    ...(input.model === "seedance-2.5"
+      ? { omni_reference_task_type: "edit" }
+      : {}),
     ratio: "adaptive",
-    duration: -1,
+    duration: input.model === "seedance-2.5" ? -1 : input.duration,
     resolution: input.resolution,
-    generate_audio: true,
+    // Source audio is restored locally; don't synthesize a track to discard.
+    generate_audio: !input.preserveAudio,
     watermark: true,
   };
 }
@@ -211,14 +263,13 @@ export async function downloadProviderMedia(
     ".bytepluscdn.com",
     ".byteplus.com",
     ".amazonaws.com",
-    ".fal.media",
   ];
   if (
     u.protocol !== "https:" ||
     u.username ||
     u.password ||
     isIP(u.hostname) ||
-    !(u.hostname === "fal.media" || allowed.some((s) => u.hostname.endsWith(s)))
+    !allowed.some((s) => u.hostname.endsWith(s))
   )
     throw new ProviderError("Provider returned an untrusted media host.");
   const addresses = await lookup(u.hostname, { all: true });

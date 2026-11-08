@@ -1,10 +1,12 @@
-import { sql } from "@/server/db";
-import { ok } from "@/server/http";
-export async function GET() {
-  try {
-    await sql("SELECT 1");
-    return ok({ status: "ok" });
-  } catch {
-    return ok({ status: "unavailable" }, 503);
-  }
-}
+import { workspace } from "@/server/workspace";
+import { ok, route } from "@/server/http";
+export const dynamic = "force-dynamic";
+export const GET = (request: Request) =>
+  route(async () => {
+    try {
+      await workspace.read((state) => state.version);
+      return ok({ status: "ok", mode: "local", persistence: "files" });
+    } catch {
+      return ok({ status: "unavailable" }, 503);
+    }
+  }, request);

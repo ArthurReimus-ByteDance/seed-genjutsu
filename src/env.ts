@@ -1,19 +1,26 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
+import { videoModels } from "./lib/video-models";
 
 export const env = createEnv({
   server: {
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
-    DATABASE_URL: z
-      .string()
-      .default("postgresql://recast:recast@127.0.0.1:58432/recast"),
-    APP_URL: z.url().default("http://localhost:3107"),
-    SESSION_SECRET: z.string().min(32).optional(),
-    REGISTRATION_ENABLED: z.enum(["true", "false"]).default("false"),
-    INVITE_CODE: z.string().optional(),
+    APP_URL: z
+      .url()
+      .refine(
+        (value) =>
+          ["localhost", "127.0.0.1", "[::1]"].includes(new URL(value).hostname),
+        "The single-user studio must use a loopback APP_URL.",
+      )
+      .default("http://localhost:3107"),
+    DEMO_ENABLED: z.enum(["true", "false"]).default("false"),
     BYTEPLUS_API_KEY: z.string().optional(),
+    PROMPT_ENHANCER_MODEL: z
+      .string()
+      .min(1)
+      .default("deepseek-v4-1-flash-261017"),
     BYTEPLUS_BASE_URL: z
       .url()
       .default("https://ark.ap-southeast.bytepluses.com/api/v3"),
@@ -23,13 +30,12 @@ export const env = createEnv({
     BYTEPLUS_REGION: z.string().default("ap-southeast-1"),
     BYTEPLUS_PROJECT: z.string().default("default"),
     BYTEPLUS_ASSET_GROUP: z.string().optional(),
-    SEEDANCE_MODEL: z.string().default("dreamina-seedance-2-5-260628"),
-    SEEDREAM_MODEL: z.string().optional(),
-    FAL_KEY: z.string().optional(),
-    FAL_SAM_ENDPOINT: z
+    SEEDANCE_2_MODEL: z.string().default(videoModels["seedance-2"].providerId),
+    SEEDANCE_2_5_MODEL: z
       .string()
-      .regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_/-]+$/)
-      .default("fal-ai/sam-3-1/video"),
+      .default(videoModels["seedance-2.5"].providerId),
+    SEEDREAM_MODEL: z.string().optional(),
+    META_API_KEY: z.string().optional(),
     STORAGE_MODE: z.enum(["local", "tos"]).default("local"),
     TOS_ACCESS_KEY: z.string().optional(),
     TOS_SECRET_KEY: z.string().optional(),
@@ -44,12 +50,10 @@ export const env = createEnv({
   },
   runtimeEnv: {
     NODE_ENV: process.env.NODE_ENV,
-    DATABASE_URL: process.env.DATABASE_URL,
+    DEMO_ENABLED: process.env.DEMO_ENABLED,
     APP_URL: process.env.APP_URL,
-    SESSION_SECRET: process.env.SESSION_SECRET,
-    REGISTRATION_ENABLED: process.env.REGISTRATION_ENABLED,
-    INVITE_CODE: process.env.INVITE_CODE,
     BYTEPLUS_API_KEY: process.env.BYTEPLUS_API_KEY,
+    PROMPT_ENHANCER_MODEL: process.env.PROMPT_ENHANCER_MODEL,
     BYTEPLUS_BASE_URL: process.env.BYTEPLUS_BASE_URL,
     BYTEPLUS_ACCESS_KEY: process.env.BYTEPLUS_ACCESS_KEY,
     BYTEPLUS_SECRET_KEY: process.env.BYTEPLUS_SECRET_KEY,
@@ -57,10 +61,10 @@ export const env = createEnv({
     BYTEPLUS_REGION: process.env.BYTEPLUS_REGION,
     BYTEPLUS_PROJECT: process.env.BYTEPLUS_PROJECT,
     BYTEPLUS_ASSET_GROUP: process.env.BYTEPLUS_ASSET_GROUP,
-    SEEDANCE_MODEL: process.env.SEEDANCE_MODEL,
+    SEEDANCE_2_MODEL: process.env.SEEDANCE_2_MODEL,
+    SEEDANCE_2_5_MODEL: process.env.SEEDANCE_2_5_MODEL,
     SEEDREAM_MODEL: process.env.SEEDREAM_MODEL,
-    FAL_KEY: process.env.FAL_KEY,
-    FAL_SAM_ENDPOINT: process.env.FAL_SAM_ENDPOINT,
+    META_API_KEY: process.env.META_API_KEY,
     STORAGE_MODE: process.env.STORAGE_MODE,
     TOS_ACCESS_KEY: process.env.TOS_ACCESS_KEY,
     TOS_SECRET_KEY: process.env.TOS_SECRET_KEY,

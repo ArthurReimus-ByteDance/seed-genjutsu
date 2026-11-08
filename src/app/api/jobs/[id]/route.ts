@@ -1,14 +1,13 @@
 import { z } from "zod";
-import { requireUser } from "@/server/auth";
-import { jobRow, presentJob } from "@/server/jobs";
+import { jobRecord, presentJob } from "@/server/jobs";
 import { ok, route } from "@/server/http";
+export const dynamic = "force-dynamic";
 export const GET = (
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ) =>
   route(async () => {
-    const user = await requireUser();
     const { id } = await context.params;
     z.uuid().parse(id);
-    return ok({ job: await presentJob(await jobRow(id, user.id)) });
-  });
+    return ok({ job: await presentJob(await jobRecord(id)) });
+  }, request);

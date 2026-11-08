@@ -1,92 +1,62 @@
-import { sql } from "./db";
-import { ownedMedia, publicUpload, type MediaRow } from "./storage";
+import { randomUUID } from "node:crypto";
+import { workspace, type StoredJob } from "./workspace";
+import { getMedia, publicUpload } from "./storage";
 import { AppError } from "./http";
 import { env } from "@/env";
-import { createJobSchema, type CreateJob, type Job } from "@/lib/schemas";
-export type JobRow = {
-  id: string;
-  user_id: string;
-  name: string;
-  prompt: string;
-  config: CreateJob;
-  source_id: string;
-  character_id: string;
-  prepared_id: string | null;
-  frame_id: string | null;
-  anchor_id: string | null;
-  masked_id: string | null;
-  result_id: string | null;
-  status: Job["status"];
-  stage: string;
-  progress: number;
-  error: string | null;
-  created_at: Date;
-  updated_at: Date;
-  sam_request_id: string | null;
-  provider_task_id: string | null;
-  asset_id: string | null;
-  asset_group_id: string | null;
-  submission_started_at: Date | null;
-  cancel_requested: boolean;
-};
-export async function jobRow(id: string, userId?: string) {
-  const rows = await sql<JobRow>(
-    "SELECT * FROM jobs WHERE id=$1" + (userId ? " AND user_id=$2" : ""),
-    userId ? [id, userId] : [id],
-  );
-  if (!rows[0]) throw new AppError(404, "NOT_FOUND", "Generation not found.");
-  return rows[0];
+import { type CreateJob, type Job } from "@/lib/schemas";
+import { providerModelId } from "./video-models";
+const runnable = (status: string) =>
+  ["queued", "processing", "generating"].includes(status);
+const finished = (status: string) =>
+  ["succeeded", "failed", "cancelled", "needs_attention"].includes(status);
+
+export async function jobRecord(id: string) {
+  return workspace.read((state) => {
+    const job = state.jobs[id];
+    if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
+    return job;
+  });
 }
-export async function presentJob(row: JobRow): Promise<Job> {
-  const ids = [
-    row.source_id,
-    row.character_id,
-    row.frame_id,
-    row.anchor_id,
-    row.masked_id,
-    row.result_id,
-  ].filter(Boolean);
-  const media = await sql<MediaRow>(
-    "SELECT * FROM uploads WHERE id=ANY($1::uuid[]) AND user_id=$2",
-    [ids, row.user_id],
-  );
-  const find = (id: string | null) => media.find((m) => m.id === id);
-  const get = (id: string | null) => {
-    const m = find(id);
-    return m ? publicUpload(m) : null;
-  };
-  const events = await sql(
-    "SELECT id,stage,message,created_at FROM job_events WHERE job_id=$1 ORDER BY id ASC",
-    [row.id],
-  );
-  return {
-    id: row.id,
-    name: row.name,
-    prompt: row.prompt,
-    status: row.status,
-    stage: row.stage,
-    progress: row.progress,
-    config: createJobSchema.parse(row.config),
-    source: get(row.source_id)!,
-    character: get(row.character_id)!,
-    frame: get(row.frame_id),
-    anchor: get(row.anchor_id),
-    masked: get(row.masked_id),
-    result: get(row.result_id),
-    error: row.error,
-    createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString(),
-    events: events.map((e) => ({
-      id: Number(e.id),
-      stage: e.stage,
-      message: e.message,
-      createdAt: e.created_at.toISOString(),
-    })),
-  };
+export async function presentJob(row: StoredJob): Promise<Job> {
+  return workspace.read((state) => {
+    const get = (id: string | null) =>
+      id && state.media[id] ? publicUpload(state.media[id]) : null;
+    const source = get(row.source_id),
+      character = get(row.character_id);
+    if (!source || !character)
+      throw new Error("A saved take is missing its references.");
+    return {
+      id: row.id,
+      name: row.name,
+      prompt: row.prompt,
+      status: row.status,
+      stage: row.stage,
+      progress: row.progress,
+      config: row.config,
+      source,
+      character,
+      frame: get(row.frame_id),
+      anchor: get(row.anchor_id),
+      masked: get(row.masked_id),
+      result: get(row.result_id),
+      error: row.error,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      events: row.events,
+    };
+  });
 }
-export async function createJob(userId: string, input: CreateJob) {
-  const source = await ownedMedia(input.sourceId, userId);
-  const character = await ownedMedia(input.characterId, userId);
+export async function listJobs() {
+  const rows = await workspace.read((state) =>
+    Object.values(state.jobs)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, 50),
+  );
+  return Promise.all(rows.map(presentJob));
+}
+export async function createJob(input: CreateJob) {
+  const source = await getMedia(input.sourceId),
+    character = await getMedia(input.characterId);
   if (source.kind !== "video" || character.kind !== "character")
     throw new AppError(
       400,
@@ -103,70 +73,208 @@ export async function createJob(userId: string, input: CreateJob) {
     throw new AppError(
       503,
       "IMAGE_SETUP",
-      "The Seedream image model is not connected yet. Disable first-frame preparation or configure its verified model ID.",
+      "The Seedream image model is not connected yet. Disable scene preparation or configure its verified model ID.",
     );
-  const client = await (await import("./db")).pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [userId]);
-    const active = await client.query(
-      "SELECT count(*)::int AS count FROM jobs WHERE user_id=$1 AND status IN ('queued','processing','generating','awaiting_approval')",
-      [userId],
-    );
-    const daily = await client.query(
-      "SELECT count(*)::int AS count FROM jobs WHERE user_id=$1 AND created_at>now()-interval '1 day'",
-      [userId],
-    );
+  const job = await workspace.update((state) => {
+    const now = Date.now(),
+      rows = Object.values(state.jobs);
     if (
-      active.rows[0].count >= env.MAX_ACTIVE_JOBS ||
-      daily.rows[0].count >= env.MAX_DAILY_JOBS
+      rows.filter(
+        (job) => runnable(job.status) || job.status === "awaiting_approval",
+      ).length >= env.MAX_ACTIVE_JOBS ||
+      rows.filter((job) => Date.parse(job.created_at) > now - 86400000)
+        .length >= env.MAX_DAILY_JOBS
     )
       throw new AppError(
         429,
         "GENERATION_LIMIT",
-        "Your workspace generation limit has been reached.",
+        "Your studio generation limit has been reached.",
       );
-    const result = await client.query<JobRow>(
-      "INSERT INTO jobs (user_id,name,prompt,config,source_id,character_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
-      [
-        userId,
-        input.prompt.slice(0, 60),
-        input.prompt,
-        JSON.stringify(input),
-        source.id,
-        character.id,
+    const id = randomUUID(),
+      timestamp = new Date(now).toISOString();
+    const job: StoredJob = {
+      id,
+      name: input.prompt.slice(0, 60),
+      prompt: input.prompt,
+      config: input,
+      source_id: source.id,
+      character_id: character.id,
+      prepared_id: null,
+      frame_id: null,
+      anchor_id: null,
+      masked_id: null,
+      result_id: null,
+      status: "queued",
+      stage: "queued",
+      progress: 0,
+      error: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+      sam_request_id: null,
+      meta_response_id: null,
+      provider_task_id: null,
+      seedance_model_id: providerModelId(input.model),
+      asset_id: null,
+      asset_group_id: null,
+      submission_started_at: null,
+      cancel_requested: false,
+      next_run_at: now,
+      lease_until: null,
+      lease_owner: null,
+      attempts: 0,
+      events: [
+        {
+          id: 1,
+          stage: "queued",
+          message: "Your take is in the processing queue.",
+          createdAt: timestamp,
+        },
       ],
-    );
-    await client.query(
-      "INSERT INTO job_events (job_id,stage,message) VALUES ($1,'queued','Your generation is in the processing queue.')",
-      [result.rows[0].id],
-    );
-    await client.query("COMMIT");
-    return presentJob(result.rows[0]);
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+    };
+    state.jobs[id] = job;
+    return job;
+  });
+  return presentJob(job);
 }
-export async function event(id: string, stage: string, message: string) {
-  await sql("INSERT INTO job_events (job_id,stage,message) VALUES ($1,$2,$3)", [
-    id,
+function appendEvent(job: StoredJob, stage: string, message: string) {
+  job.events.push({
+    id: job.events.length + 1,
     stage,
     message,
-  ]);
+    createdAt: new Date().toISOString(),
+  });
+}
+export async function updateJob(id: string, patch: Partial<StoredJob>) {
+  return workspace.update((state) => {
+    const job = state.jobs[id];
+    if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
+    Object.assign(job, patch, { updated_at: new Date().toISOString() });
+    return job;
+  });
+}
+export async function event(id: string, stage: string, message: string) {
+  return workspace.update((state) =>
+    appendEvent(state.jobs[id], stage, message),
+  );
 }
 export async function transition(
   id: string,
-  status: string,
+  status: StoredJob["status"],
   stage: string,
   progress: number,
   message: string,
 ) {
-  const rows = await sql(
-    "UPDATE jobs SET status=$2,stage=$3,progress=$4,updated_at=now(),next_run_at=now(),lease_until=NULL,lease_owner=NULL WHERE id=$1 AND cancel_requested=false RETURNING id",
-    [id, status, stage, progress],
+  return workspace.update((state) => {
+    const job = state.jobs[id];
+    if (job.cancel_requested) return;
+    Object.assign(job, {
+      status,
+      stage,
+      progress,
+      updated_at: new Date().toISOString(),
+      next_run_at: Date.now(),
+    });
+    appendEvent(job, stage, message);
+  });
+}
+export function finishPreparation(
+  job: Pick<StoredJob, "id" | "config">,
+  reviewMessage: string,
+) {
+  if (job.config.reviewBeforeGeneration)
+    return transition(job.id, "awaiting_approval", "review", 45, reviewMessage);
+  return transition(
+    job.id,
+    "queued",
+    "registering",
+    45,
+    "Prepared references are ready. Continuing to video generation.",
   );
-  if (rows.length) await event(id, stage, message);
+}
+export async function approveJob(id: string) {
+  const job = await workspace.update((state) => {
+    const job = state.jobs[id];
+    if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
+    if (
+      job.status !== "awaiting_approval" ||
+      !job.masked_id ||
+      (job.config.prepareImage && !job.anchor_id) ||
+      job.cancel_requested
+    )
+      throw new AppError(
+        409,
+        "NOT_AWAITING_APPROVAL",
+        "This take is not waiting for reference approval.",
+      );
+    Object.assign(job, {
+      status: "queued",
+      stage: "registering",
+      next_run_at: Date.now(),
+      updated_at: new Date().toISOString(),
+    });
+    appendEvent(
+      job,
+      "registering",
+      "Prepared references approved. Continuing to video generation.",
+    );
+    return job;
+  });
+  return presentJob(job);
+}
+export async function cancelJob(id: string) {
+  const job = await workspace.update((state) => {
+    const job = state.jobs[id];
+    if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
+    if (finished(job.status))
+      throw new AppError(
+        409,
+        "TERMINAL_JOB",
+        "This take has already finished.",
+      );
+    job.cancel_requested = true;
+    // Review is not runnable, even if its previous worker is still releasing
+    // the lease. It must finish here rather than wait for another claim.
+    if (
+      job.status === "awaiting_approval" ||
+      (job.status === "queued" && !job.lease_owner)
+    ) {
+      job.status = "cancelled";
+      job.stage = "cancelled";
+    }
+    job.updated_at = new Date().toISOString();
+    job.next_run_at = Date.now();
+    appendEvent(
+      job,
+      "cancelled",
+      "Cancellation requested. A generation already running at the provider may still finish.",
+    );
+    return job;
+  });
+  return presentJob(job);
+}
+export async function claimJob(worker: string) {
+  return workspace.update((state) => {
+    const now = Date.now();
+    const job = Object.values(state.jobs)
+      .filter(
+        (job) =>
+          runnable(job.status) &&
+          job.next_run_at <= now &&
+          (!job.lease_until || job.lease_until < now),
+      )
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
+    if (!job) return null;
+    job.lease_owner = worker;
+    job.lease_until = now + 180000;
+    job.attempts++;
+    return job.id;
+  });
+}
+export async function renewLease(id: string, worker: string) {
+  return workspace.update((state) => {
+    const job = state.jobs[id];
+    if (!job || job.lease_owner !== worker) return false;
+    job.lease_until = Date.now() + 180000;
+    return !job.cancel_requested;
+  });
 }

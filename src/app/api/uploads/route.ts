@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { requireUser, rateLimit } from "@/server/auth";
-import { AppError, ok, route, sameOrigin } from "@/server/http";
+import { AppError, ok, route } from "@/server/http";
 import { mediaRoot, saveMedia, publicUpload } from "@/server/storage";
 import {
   frame,
@@ -15,9 +14,6 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 export const POST = (request: Request) =>
   route(async () => {
-    sameOrigin(request);
-    const user = await requireUser();
-    await rateLimit("upload:" + user.id, 30, 3600);
     if (Number(request.headers.get("content-length") ?? 0) > 105 * 1024 * 1024)
       throw new AppError(413, "TOO_LARGE", "Videos must be under 100 MB.");
     const form = await request.formData();
@@ -37,7 +33,6 @@ export const POST = (request: Request) =>
     if (kind === "character") {
       const image = await normalizeImage(data);
       const media = await saveMedia({
-        userId: user.id,
         kind,
         name: file.name.slice(0, 180),
         mime: "image/jpeg",
@@ -59,14 +54,12 @@ export const POST = (request: Request) =>
         );
       const image = await frame(temporary);
       const poster = await saveMedia({
-        userId: user.id,
         kind: "frame",
         name: "Source poster",
         mime: "image/jpeg",
         ...image,
       });
       const media = await saveMedia({
-        userId: user.id,
         kind,
         name: file.name.slice(0, 180),
         mime: "video/mp4",
@@ -78,4 +71,4 @@ export const POST = (request: Request) =>
     } finally {
       await unlink(temporary).catch(() => {});
     }
-  });
+  }, request);

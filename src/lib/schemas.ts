@@ -1,19 +1,11 @@
 import { z } from "zod";
-export const userSchema = z.object({
-  id: z.uuid(),
-  name: z.string(),
-  email: z.email(),
-});
-export type User = z.infer<typeof userSchema>;
-export const credentialsSchema = z.object({
-  email: z
-    .email()
-    .max(254)
-    .transform((v) => v.toLowerCase()),
-  password: z.string().min(12, "Use at least 12 characters.").max(128),
-  name: z.string().trim().min(2).max(80).optional(),
-  inviteCode: z.string().max(200).optional(),
-});
+import {
+  DEFAULT_VIDEO_MODEL,
+  LEGACY_VIDEO_MODEL,
+  videoModelIds,
+  videoModels,
+  type VideoModelId,
+} from "./video-models";
 export const uploadSchema = z.object({
   id: z.uuid(),
   kind: z.enum([
@@ -35,21 +27,46 @@ export const uploadSchema = z.object({
   posterUrl: z.string().nullable(),
 });
 export type Upload = z.infer<typeof uploadSchema>;
-export const createJobSchema = z.object({
-  sourceId: z.uuid(),
-  characterId: z.uuid(),
-  prompt: z
-    .string()
-    .trim()
-    .min(10, "Describe the character swap in at least 10 characters.")
-    .max(3000),
-  target: z.string().trim().min(1).max(160).default("person"),
-  start: z.number().min(0).max(300).default(0),
-  duration: z.number().min(4).max(30),
-  resolution: z.enum(["480p", "720p", "1080p"]).default("720p"),
-  prepareImage: z.boolean().default(false),
-  preserveAudio: z.boolean().default(true),
+function jobConfigSchema(defaultModel: VideoModelId) {
+  return z
+    .object({
+      model: z.enum(videoModelIds).default(defaultModel),
+      sourceId: z.uuid(),
+      characterId: z.uuid(),
+      prompt: z
+        .string()
+        .trim()
+        .min(10, "Describe the character swap in at least 10 characters.")
+        .max(3000),
+      target: z.string().trim().min(1).max(160).default("person"),
+      start: z.number().min(0).max(300).default(0),
+      duration: z.number().min(4).max(30),
+      resolution: z.enum(["480p", "720p", "1080p"]).default("720p"),
+      prepareImage: z.boolean().default(false),
+      preserveAudio: z.boolean().default(true),
+      reviewBeforeGeneration: z.boolean().default(true),
+    })
+    .superRefine((config, context) => {
+      if (
+        config.duration > videoModels[config.model].maxDuration ||
+        (config.model === "seedance-2" && !Number.isInteger(config.duration))
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["duration"],
+          message:
+            config.model === "seedance-2"
+              ? "Seedance 2 needs a whole-second clip between 4 and 15 seconds."
+              : "Seedance 2.5 supports clips between 4 and 30 seconds.",
+        });
+    });
+}
+export const createJobSchema = jobConfigSchema(DEFAULT_VIDEO_MODEL);
+export const generationPromptSchema = z.object({
+  prompt: createJobSchema.shape.prompt,
 });
+// Takes saved before the picker were submitted with Seedance 2.5.
+export const savedJobConfigSchema = jobConfigSchema(LEGACY_VIDEO_MODEL);
 export type CreateJob = z.infer<typeof createJobSchema>;
 export const jobStatusSchema = z.enum([
   "queued",
@@ -74,7 +91,7 @@ export const jobSchema = z.object({
   status: jobStatusSchema,
   stage: z.string(),
   progress: z.number(),
-  config: createJobSchema,
+  config: savedJobConfigSchema,
   source: uploadSchema,
   character: uploadSchema,
   frame: uploadSchema.nullable(),
@@ -93,9 +110,11 @@ export const capabilitySchema = z.object({
   storage: z.boolean(),
   portraits: z.boolean(),
   sam: z.boolean(),
+  promptEnhancement: z.boolean(),
+  promptEnhancerModel: z.string().nullable(),
   seedanceModel: z.string(),
+  defaultVideoModel: z.enum(videoModelIds),
   seedreamModel: z.string().nullable(),
-  registration: z.boolean(),
   missing: z.array(z.string()),
   workerSeenAt: z.string().nullable(),
 });

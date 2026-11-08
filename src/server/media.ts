@@ -32,6 +32,17 @@ export async function probe(file: string) {
       "Upload a video with a readable video track.",
     );
   const duration = Number(data.format.duration);
+  const rotation = Number(
+    stream.side_data_list?.find((item: { rotation?: number }) =>
+      Number.isFinite(item.rotation),
+    )?.rotation ??
+      stream.tags?.rotate ??
+      0,
+  );
+  // ffmpeg applies the display matrix before scaling. Report those same
+  // display dimensions so a rotated phone clip keeps its portrait aspect.
+  const quarterTurn =
+    Number.isFinite(rotation) && Math.abs(rotation % 180) === 90;
   if (
     !Number.isFinite(duration) ||
     duration <= 0 ||
@@ -47,8 +58,8 @@ export async function probe(file: string) {
       "This video format or size is not supported.",
     );
   return {
-    width: Number(stream.width),
-    height: Number(stream.height),
+    width: Number(quarterTurn ? stream.height : stream.width),
+    height: Number(quarterTurn ? stream.width : stream.height),
     duration,
     hasAudio: data.streams.some(
       (s: { codec_type: string }) => s.codec_type === "audio",
@@ -179,7 +190,6 @@ export async function restoreAudio(
   source: string,
   signal?: AbortSignal,
 ) {
-  if (!(await probe(source)).hasAudio) return readFile(output);
   const dir = await mkdtemp(path.join(tmpdir(), "recast-audio-"));
   const destination = path.join(dir, "result.mp4");
   try {
@@ -197,11 +207,15 @@ export async function restoreAudio(
         "-map",
         "0:v:0",
         "-map",
-        "1:a:0",
+        "1:a:0?",
         "-c:v",
         "copy",
         "-c:a",
         "aac",
+        // Pad an early-ending source soundtrack so -shortest follows the
+        // generated video, rather than cutting its final frames away.
+        "-af",
+        "apad",
         "-shortest",
         "-movflags",
         "+faststart",

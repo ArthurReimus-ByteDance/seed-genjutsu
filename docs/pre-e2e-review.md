@@ -1,0 +1,43 @@
+# Pre-E2E review — 2026-11-07
+
+Three sub-agents reviewed the pipeline/media layer, UI/client state, and runtime/API/configuration. The parent reviewed their changes and ran the integrated checks. This remains a local, single-user studio with no authentication or database. Application changes are local and uncommitted.
+
+## Confirmed issues fixed
+
+| Area                 | Defect and correction                                                                                                                                                                                                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Shared persistence   | Standalone changes its working directory. Relative/default `MEDIA_ROOT` could put the web server and worker in different libraries. Startup now resolves the directory before that change, without rewriting `.env.local`.                                                                                         |
+| Phone footage        | Metadata probing ignored display rotation, causing portrait phone footage to be scaled into landscape dimensions. Probe now reports display-oriented dimensions; FFmpeg preparation preserves portrait aspect.                                                                                                     |
+| Audio finishing      | A source soundtrack ending before the generated video could truncate the video through `-shortest`. Padding source audio preserves the entire generated video, including silent provider outputs.                                                                                                                  |
+| Cancellation         | Cancelling reference review while its worker was releasing a lease could leave a permanently non-runnable take. Review cancellation now completes immediately.                                                                                                                                                     |
+| TOS cache            | A partial recovery could remain at the final cache path indefinitely. Cached byte length is checked; recovery validates length, writes a private unique temporary file and publishes with atomic rename. Failed recovery preserves existing bytes. This is length validation, not a cryptographic integrity check. |
+| Enhancement sessions | Enhanced/Edited/Retry/Undo/error state could survive into a different draft. A deliberate draft/take key now resets the enhancer while preserving ordinary edits and retry semantics within a draft.                                                                                                               |
+| Upload/navigation    | A finishing upload could overwrite a newly reused take's inputs. Reuse and related edit actions are blocked while an upload or conflicting operation is pending. Read-only history navigation stays available.                                                                                                     |
+| Example loading      | A late sample response could replace a new draft or navigate away from history. A request epoch rejects stale responses/errors; conflicting inputs are disabled during loading. Normal automatic sample loading still works.                                                                                       |
+| History metadata     | Completed takes could show the selected input length rather than the actual output duration. History now prefers the persisted result duration.                                                                                                                                                                    |
+| Provider audio       | Keep original audio previously generated a soundtrack only to replace it locally. The worker now sends `generate_audio: false` for source-audio restoration, and `true` when generated audio is requested. The UI explains that choice.                                                                            |
+
+The audio parameter is supported by both selected model families in the [BytePlus task API](https://docs.byteplus.com/en/docs/modelark/create-video-generation-task-api). Its revised request mapping is contract-tested; no new hosted video task was submitted in this review.
+
+## Validation performed
+
+- **30 focused tests pass**, including new cancellation, startup/cwd, phone-rotation and cache-recovery regressions. The audio test uses actual FFmpeg output, a silent generated clip and an early-ending source track. Lint, TypeScript and the production build pass. No dependency was added; the runtime reviewer found zero production dependency vulnerabilities.
+- **61 local API/worker observations** pass against the real standalone server and separate worker on port 3108, deliberately using a relative media root and blank provider credentials. The expected project directory holds the shared workspace; no shadow workspace appears beneath standalone.
+- **88 preview API observations** pass for simulated success/failure, approval, cancellation, isolated persistence, uploads and a real four-second MP4 download. These do not establish hosted-model quality.
+- **Real TOS read-only recovery** passes through the updated implementation: a truncated cache in a separate temporary directory recovers 183,540 bytes matching an existing fictional reference exactly, with mode 0600 and no temporary-file leftovers. The main workspace remains unchanged; no TOS object was written or deleted.
+- **Real local media endpoints** reject a deliberately truncated disposable cache with `404 FILE_MISSING`, preserve its bytes and serve the restored file correctly. A real rotation-tagged upload reports and plays at 180×320. The FFmpeg regression separately confirms normalized 720×1280 output.
+- **Computer-use regressions** verify a real DeepSeek enhancement followed by New take, including typing the former suggestion without resurrecting its Undo/Retry state. The real saved 2.5 result shows 3.7 seconds in history. During a real 67.6 MB upload, history reuse remains disabled; after completion, reuse preserves the chosen take's original 640×360 source.
+- **Stale sample races** were exercised against the running preview API by temporarily holding its disposable file lock, navigating to New take/history, and then releasing the response. Neither response overwrote the new context. Automatic gallery sample loading succeeds normally. No response was intercepted or replaced by browser tooling; preview generation remains explicitly simulated.
+- History fits measured **390px and 320px CSS widths** without horizontal overflow. Browser consoles are clear and temporary viewport overrides were reset.
+
+Sanitized evidence is ignored under `output/review-2026-11-07/`: test/build logs, local/preview smoke receipts, `runtime-proof.json`, `tos-live-cache.json`, `ui-proof.json` and screenshots. Large/disposable test media and the isolated runtime workspace are cleaned up after validation.
+
+## Next full provider run
+
+The code is ready for the next integrated test. Earlier successful provider runs used fictional pan/zoom footage; the subsequent prompt comparison had an output-audio policy rejection. This review does not turn either result into a current video-quality pass.
+
+1. Use representative moving footage with audible source sound. Run a short 480p Seedance 2 take with source-audio restoration and a Seedance 2.5 take through optional Seedream preparation, including generated audio where requested.
+2. Verify the revised outbound audio choice, SAM selection, reference review, Virtual Portrait Active status, final audio timing and complete video duration. Check persisted state after refresh, comparison playback and downloaded-file hashes.
+3. Assess occlusion, similar-looking people and longer 15/30-second selections after short cases succeed. The visual SAM picker is still a separate future feature.
+
+Docker/container execution was not rerun in this review. Unreferenced-upload cleanup and richer media-integrity metadata remain future maintenance work; keep local/TOS backups. No paid Meta, Seedream, Virtual Portrait or Seedance generation was initiated here. The only hosted inference was one DeepSeek enhancement used to verify the changed UI state boundary.

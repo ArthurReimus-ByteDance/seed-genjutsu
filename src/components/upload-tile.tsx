@@ -3,35 +3,31 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { Film, ImagePlus, Upload, Loader2, X, Check } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, type StudioApi } from "@/lib/api";
 import type { Upload as Media } from "@/lib/schemas";
 export function UploadTile({
   kind,
   value,
   onChange,
-  authenticated,
-  onAuth,
   disabled,
+  apiClient = api,
+  onBusyChange,
 }: {
   kind: "video" | "character";
   value: Media | null;
   onChange: (media: Media | null) => void;
-  authenticated: boolean;
-  onAuth: () => void;
   disabled?: boolean;
+  apiClient?: StudioApi;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const pending = useRef<AbortController | null>(null);
-  useEffect(() => () => pending.current?.abort(), [authenticated]);
+  useEffect(() => () => pending.current?.abort(), []);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [drag, setDrag] = useState(false);
   async function upload(file?: File) {
     if (!file) return;
-    if (!authenticated) {
-      onAuth();
-      return;
-    }
     if (disabled || loading) return;
     if (file.size > (kind === "video" ? 100 : 20) * 1024 * 1024) {
       toast.error(
@@ -43,30 +39,29 @@ export function UploadTile({
     }
     const controller = new AbortController();
     pending.current = controller;
+    const signal = controller.signal;
+    onBusyChange?.(true);
     setLoading(true);
     setProgress(0);
     try {
-      const media = await api.upload(
-        file,
-        kind,
-        setProgress,
-        controller.signal,
-      );
-      if (controller.signal.aborted) return;
+      const media = await apiClient.upload(file, kind, setProgress, signal);
+      if (signal.aborted) return;
       onChange(media);
       toast.success(
         kind === "video" ? "Your performance is ready." : "Character added.",
       );
     } catch (e) {
-      if (!controller.signal.aborted)
+      if (!signal.aborted)
         toast.error(e instanceof Error ? e.message : "Upload failed.");
     } finally {
+      onBusyChange?.(false);
       setLoading(false);
       if (input.current) input.current.value = "";
     }
   }
   return (
     <div
+      aria-busy={loading}
       className={"upload-wrap " + (drag ? "is-dragging" : "")}
       onDragOver={(e) => {
         e.preventDefault();
@@ -99,7 +94,7 @@ export function UploadTile({
         type="button"
         className={"upload-tile " + (value ? "has-media" : "")}
         disabled={disabled || loading}
-        onClick={() => (authenticated ? input.current?.click() : onAuth())}
+        onClick={() => input.current?.click()}
         aria-label={
           kind === "video" ? "Choose source video" : "Choose character image"
         }

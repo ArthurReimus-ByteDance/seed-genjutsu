@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { requireUser } from "@/server/auth";
-import { ownedMedia, localPath, providerUrl } from "@/server/storage";
+import { getMedia, localPath, providerUrl } from "@/server/storage";
 import { route, AppError } from "@/server/http";
 import { env } from "@/env";
 export const GET = (
@@ -9,10 +8,9 @@ export const GET = (
   context: { params: Promise<{ id: string }> },
 ) =>
   route(async () => {
-    const user = await requireUser();
     const { id } = await context.params;
     z.uuid().parse(id);
-    const media = await ownedMedia(id, user.id);
+    const media = await getMedia(id);
     const download = new URL(request.url).searchParams.has("download");
     if (env.STORAGE_MODE === "tos")
       return new Response(null, {
@@ -63,4 +61,4 @@ export const GET = (
     return new Response(new Uint8Array(data), {
       headers: { ...headers, "Content-Length": String(data.length) },
     });
-  });
+  }, request);

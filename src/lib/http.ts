@@ -8,34 +8,32 @@ export class ApiError extends Error {
     super(message);
   }
 }
-export const http = axios.create({
-  baseURL: "/api",
-  timeout: 120000,
-  withCredentials: true,
-  headers: { Accept: "application/json" },
-});
-http.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    const status = error.response?.status ?? 0;
-    const detail = error.response?.data?.error;
-    if (
-      status === 401 &&
-      typeof window !== "undefined" &&
-      !String(error.config?.url).includes("/auth/login")
-    )
-      window.dispatchEvent(new Event("recast:auth-required"));
-    return Promise.reject(
-      new ApiError(
-        detail?.message ??
-          (status === 413
-            ? "This file is too large."
-            : status === 0
-              ? "Connection interrupted. Please try again."
-              : "Something went wrong. Please try again."),
-        status,
-        detail?.code ?? "NETWORK",
-      ),
-    );
-  },
-);
+export function createHttpClient(baseURL: string) {
+  const client = axios.create({
+    baseURL,
+    timeout: 120000,
+    headers: { Accept: "application/json" },
+  });
+  client.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (axios.isCancel(error)) return Promise.reject(error);
+      const status = error.response?.status ?? 0;
+      const detail = error.response?.data?.error;
+      return Promise.reject(
+        new ApiError(
+          detail?.message ??
+            (status === 413
+              ? "This file is too large."
+              : status === 0
+                ? "Connection interrupted. Your work is saved. Please try again."
+                : "Something went wrong. Please try again."),
+          status,
+          detail?.code ?? "NETWORK",
+        ),
+      );
+    },
+  );
+  return client;
+}
+export const http = createHttpClient("/api");

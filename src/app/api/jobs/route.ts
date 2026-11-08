@@ -1,29 +1,13 @@
 import { createJobSchema } from "@/lib/schemas";
-import { requireUser, rateLimit } from "@/server/auth";
-import { createJob, presentJob, type JobRow } from "@/server/jobs";
-import { sql } from "@/server/db";
-import { ok, readJson, route, sameOrigin } from "@/server/http";
-export const GET = () =>
-  route(async () => {
-    const user = await requireUser();
-    const rows = await sql<JobRow>(
-      "SELECT * FROM jobs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50",
-      [user.id],
-    );
-    return ok({ jobs: await Promise.all(rows.map(presentJob)) });
-  });
+import { createJob, listJobs } from "@/server/jobs";
+import { ok, readJson, route } from "@/server/http";
+export const dynamic = "force-dynamic";
+export const GET = (request: Request) =>
+  route(async () => ok({ jobs: await listJobs() }), request);
 export const POST = (request: Request) =>
   route(async () => {
-    sameOrigin(request);
-    const user = await requireUser();
-    await rateLimit("create-job:" + user.id, 10, 300);
-    return ok(
-      {
-        job: await createJob(
-          user.id,
-          createJobSchema.parse(await readJson(request)),
-        ),
-      },
-      202,
-    );
-  });
+    const job = await createJob(createJobSchema.parse(await readJson(request)));
+    const response = ok({ job }, 202);
+    response.headers.set("Location", "/api/jobs/" + job.id);
+    return response;
+  }, request);

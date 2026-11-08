@@ -1,46 +1,45 @@
 import { z } from "zod";
-import { http } from "./http";
+import { http, createHttpClient } from "./http";
+import type { AxiosInstance } from "axios";
+import {
+  enhancePromptRequestSchema,
+  promptEnhancementSchema,
+  type EnhancePromptRequest,
+} from "./prompt-enhancement";
 import {
   capabilitySchema,
   createJobSchema,
   jobSchema,
   uploadSchema,
-  userSchema,
   type CreateJob,
 } from "./schemas";
-export const queryKeys = {
-  session: ["session"] as const,
-  capabilities: ["capabilities"] as const,
-  jobs: ["jobs"] as const,
-  job: (id: string) => ["job", id] as const,
-};
+export const studioQueryKeys = (mode: "live" | "demo") => ({
+  capabilities: ["studio", mode, "capabilities"] as const,
+  jobs: ["studio", mode, "jobs"] as const,
+  job: (id: string) => ["studio", mode, "job", id] as const,
+});
+export const queryKeys = studioQueryKeys("live");
 type ReadOptions = { signal?: AbortSignal };
-const authResponse = z.object({ user: userSchema });
-export const api = {
-  session: async (options?: ReadOptions) =>
-    z
-      .object({ user: userSchema.nullable(), registration: z.boolean() })
-      .parse(
-        (await http.get("/auth/session", { signal: options?.signal })).data,
-      ),
-  login: async (input: { email: string; password: string }) =>
-    authResponse.parse(
+export type DemoScenario = "success" | "failure";
+export const createStudioApi = (http: AxiosInstance) => ({
+  enhancePrompt: async (
+    input: EnhancePromptRequest,
+    options?: { signal?: AbortSignal; scenario?: DemoScenario },
+  ) =>
+    z.object({ enhancement: promptEnhancementSchema }).parse(
       (
-        await http.post("/auth/login", {
-          email: input.email,
-          password: input.password,
-        })
+        await http.post(
+          "/prompts/enhance",
+          enhancePromptRequestSchema.parse(input),
+          {
+            signal: options?.signal,
+            headers: options?.scenario
+              ? { "X-Recast-Scenario": options.scenario }
+              : undefined,
+          },
+        )
       ).data,
-    ),
-  register: async (input: {
-    email: string;
-    password: string;
-    name?: string;
-    inviteCode?: string;
-  }) => authResponse.parse((await http.post("/auth/register", input)).data),
-  logout: async () => {
-    await http.post("/auth/logout");
-  },
+    ).enhancement,
   capabilities: async (options?: ReadOptions) =>
     capabilitySchema.parse(
       (await http.get("/capabilities", { signal: options?.signal })).data,
@@ -53,10 +52,14 @@ export const api = {
     z
       .object({ job: jobSchema })
       .parse((await http.get("/jobs/" + id, { signal })).data).job,
-  create: async (input: CreateJob) =>
-    z
-      .object({ job: jobSchema })
-      .parse((await http.post("/jobs", createJobSchema.parse(input))).data).job,
+  create: async (input: CreateJob, scenario?: DemoScenario) =>
+    z.object({ job: jobSchema }).parse(
+      (
+        await http.post("/jobs", createJobSchema.parse(input), {
+          headers: scenario ? { "X-Recast-Scenario": scenario } : undefined,
+        })
+      ).data,
+    ).job,
   approve: async (id: string) =>
     z
       .object({ job: jobSchema })
@@ -84,4 +87,14 @@ export const api = {
       ).data,
     ).upload;
   },
+});
+export const api = createStudioApi(http);
+const mockHttp = createHttpClient("/api/demo");
+export const demoApi = {
+  ...createStudioApi(mockHttp),
+  samples: async () =>
+    z
+      .object({ source: uploadSchema, character: uploadSchema })
+      .parse((await mockHttp.post("/samples")).data),
 };
+export type StudioApi = typeof api;

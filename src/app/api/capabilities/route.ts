@@ -1,11 +1,12 @@
-import { requireUser } from "@/server/auth";
-import { sql } from "@/server/db";
+import { workerSeenAt } from "@/server/workspace";
 import { ok, route } from "@/server/http";
 import { env } from "@/env";
-export const GET = () =>
+import { DEFAULT_VIDEO_MODEL } from "@/lib/video-models";
+import { providerModelId } from "@/server/video-models";
+export const dynamic = "force-dynamic";
+export const GET = (request: Request) =>
   route(async () => {
-    await requireUser();
-    const sam = !!env.FAL_KEY && !!env.FAL_SAM_ENDPOINT;
+    const sam = !!env.META_API_KEY;
     const storage =
       env.STORAGE_MODE === "tos" &&
       !!env.TOS_BUCKET &&
@@ -13,24 +14,23 @@ export const GET = () =>
       !!env.TOS_SECRET_KEY;
     const portraits = !!env.BYTEPLUS_ACCESS_KEY && !!env.BYTEPLUS_SECRET_KEY;
     const video = !!env.BYTEPLUS_API_KEY;
-    const beats = await sql(
-      "SELECT max(seen_at) AS seen FROM worker_heartbeats WHERE seen_at>now()-interval '30 seconds'",
-    );
     return ok({
       video,
       image: !!env.SEEDREAM_MODEL && video,
       storage,
       portraits,
       sam,
-      seedanceModel: env.SEEDANCE_MODEL,
+      promptEnhancement: video,
+      promptEnhancerModel: video ? env.PROMPT_ENHANCER_MODEL : null,
+      seedanceModel: providerModelId(DEFAULT_VIDEO_MODEL),
+      defaultVideoModel: DEFAULT_VIDEO_MODEL,
       seedreamModel: env.SEEDREAM_MODEL ?? null,
-      registration: env.REGISTRATION_ENABLED === "true",
       missing: [
-        !sam ? "fal.ai SAM connection" : null,
+        !sam ? "Meta SAM 3.1 API key" : null,
         !portraits ? "Virtual Portrait access keys" : null,
         !storage ? "Media object storage" : null,
         !video ? "ModelArk API key" : null,
       ].filter(Boolean),
-      workerSeenAt: beats[0].seen?.toISOString() ?? null,
+      workerSeenAt: await workerSeenAt(),
     });
-  });
+  }, request);
