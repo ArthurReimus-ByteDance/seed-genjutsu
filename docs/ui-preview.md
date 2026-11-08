@@ -4,7 +4,7 @@ The original preview was reviewed on 2026-11-05 in Chrome against the running ap
 
 ## Experience changes
 
-- Paired sample media fills the empty canvas. The studio uses black and charcoal surfaces, compact reference cards and visible clip selection. The BytePlus mark identifies the generation provider in the header and model picker.
+- Paired sample media fills the empty canvas. The studio uses black and charcoal surfaces, with BytePlus blue for primary actions, selected controls and progress. The BytePlus mark identifies the generation provider in the header and model picker.
 - Persistent primary actions keep preparation, approval and download within reach. On phones, Inputs, Preview and Your takes separate the workspace without horizontal scrolling.
 - Preparation stops at an explicit review gate. The optional scene look is visible alongside the source and subject before approval.
 - Progress, saved activity, cancellation, failure recovery and uncertain provider submission each have distinct explanations. Cancel remains available at review.
