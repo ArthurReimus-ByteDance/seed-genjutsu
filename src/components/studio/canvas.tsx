@@ -46,13 +46,11 @@ export function ExampleCanvas({
   samplePending,
   sampleDisabled = false,
   canTry,
-  sampleLabel,
 }: {
   onSample: () => void;
   samplePending: boolean;
   sampleDisabled?: boolean;
   canTry: boolean;
-  sampleLabel: string;
 }) {
   const [playing, setPlaying] = useState(false);
   const a = useRef<HTMLVideoElement>(null),
@@ -138,19 +136,10 @@ export function ExampleCanvas({
               <i>0:06</i>
             </span>
           </button>
-          <span className="illustrative-tag">ILLUSTRATIVE SAMPLE</span>
         </div>
       </div>
-      <div className="example-description">
-        <div>
-          <span className="eyebrow-label">SAME MOMENT. A NEW POSSIBILITY.</span>
-          <h2>
-            Keep the move.
-            <br className="mobile-break" /> Change the character.
-          </h2>
-          <p>Bring a performance and an image. Make the next take yours.</p>
-        </div>
-        {canTry && (
+      {canTry && (
+        <div className="example-actions">
           <Button
             onClick={onSample}
             disabled={samplePending || sampleDisabled}
@@ -161,31 +150,11 @@ export function ExampleCanvas({
             ) : (
               <Sparkles size={15} />
             )}
-            {sampleLabel}
+            Try sample
             <ArrowRight size={15} />
           </Button>
-        )}
-      </div>
-      <div className="getting-started">
-        <div>
-          <span>01</span>
-          <strong>
-            Add a performance<small>Choose your clip</small>
-          </strong>
         </div>
-        <div>
-          <span>02</span>
-          <strong>
-            Choose a character<small>One image, a new identity</small>
-          </strong>
-        </div>
-        <div>
-          <span>03</span>
-          <strong>
-            Review your take<small>Approve, create, compare</small>
-          </strong>
-        </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -499,7 +468,6 @@ export function RunDetails({
   approving,
   cancelling,
   reuseDisabled,
-  demo,
 }: {
   job: Job;
   onApprove: () => void;
@@ -508,7 +476,6 @@ export function RunDetails({
   approving: boolean;
   cancelling: boolean;
   reuseDisabled: boolean;
-  demo: boolean;
 }) {
   const [activity, setActivity] = useState(false);
   const review = job.status === "awaiting_approval";
@@ -525,38 +492,34 @@ export function RunDetails({
     >
       <JobStepper job={job} />
       <div className="run-main">
-        <div>
-          <h3>
-            {review
-              ? "Your references are ready."
-              : done
-                ? "Meet your next take."
+        {!done && (
+          <div>
+            <h3>
+              {review
+                ? "Your references are ready."
                 : failed
                   ? uncertain
                     ? "Check this take before retrying."
-                    : "Let’s give this take another try."
+                    : "Retry this take"
                   : job.status === "cancelled"
                     ? "Take cancelled."
-                    : "A new character is taking shape."}
-          </h3>
-          <p>
-            {review
-              ? "Check the subject mask and preserved scene" +
-                (job.anchor ? " and prepared scene look" : "") +
-                ", then approve to create your video."
-              : done
-                ? demo
-                  ? "This is a simulated sample result. Compare the appearance and download the clip."
-                  : "Compare the character, movement, and scene before downloading."
+                    : "Processing take"}
+            </h3>
+            <p>
+              {review
+                ? "Check the subject mask and preserved scene" +
+                  (job.anchor ? " and prepared scene look" : "") +
+                  ", then approve to create your video."
                 : failed
                   ? uncertain
                     ? "The provider submission wasn’t confirmed. Check for an existing provider task before creating another."
                     : "Your references and direction are saved. You can edit them for a new take."
                   : job.status === "cancelled"
                     ? "Your references are still here whenever you’re ready."
-                    : "We’ll keep your progress here while the video is prepared."}
-          </p>
-        </div>
+                    : "Reopen this take from Your takes."}
+            </p>
+          </div>
+        )}
         <div className="run-actions">
           {review ? (
             <>

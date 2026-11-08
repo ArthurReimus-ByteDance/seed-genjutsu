@@ -13,7 +13,6 @@ import {
   ChevronDown,
   ChevronRight,
   CircleHelp,
-  FlaskConical,
   History,
   Layers3,
   Loader2,
@@ -21,7 +20,6 @@ import {
   RotateCcw,
   ScanFace,
   Settings2,
-  ShieldCheck,
   Sparkles,
   Volume2,
   WandSparkles,
@@ -54,7 +52,12 @@ import {
   type Job,
 } from "@/lib/schemas";
 import { cn } from "@/lib/utils";
-import { ExampleCanvas, MediaCanvas, RunDetails } from "./studio/canvas";
+import {
+  ExampleCanvas,
+  MediaCanvas,
+  RunDetails,
+  statusNames,
+} from "./studio/canvas";
 import { BytePlusMark } from "./studio/byteplus-mark";
 import { Library } from "./studio/library";
 import { PromptEnhancer } from "./studio/prompt-enhancer";
@@ -107,6 +110,7 @@ export function Studio({
     apiClient = demo ? demoApi : api,
     keys = studioQueryKeys(mode),
     base = demo ? "/preview" : "/";
+  const settingsLabel = demo ? "Sample settings" : "Studio connections";
   const router = useRouter(),
     params = useSearchParams(),
     selectedId = params.get("job"),
@@ -426,27 +430,17 @@ export function Studio({
       ? "Refining your direction. You can keep editing."
       : mediaBusy
         ? "Uploading references. You can set the direction while you wait."
-        : active?.result
-          ? demo
-            ? "Illustrative result · no model was called."
-            : "Check the result before sharing."
-          : busy
-            ? "This take is saved. Come back anytime."
-            : active?.status === "awaiting_approval"
-              ? "Review your references before video generation."
-              : active
-                ? "Start a new take with these references."
-                : !connected
-                  ? "Connect the remaining services to create."
-                  : inputCount === 0
-                    ? "Add a video and character image to begin."
-                    : inputCount === 1
-                      ? currentSource
-                        ? "Add a character image to continue."
-                        : "Add a source performance to continue."
-                      : demo
-                        ? "Simulation only. No model credits are used."
-                        : "You’ll review the references before generation.";
+        : view === "library" || active
+          ? null
+          : !connected
+            ? "Connect the remaining services to create."
+            : inputCount === 0
+              ? "Add a video and character image to begin."
+              : inputCount === 1
+                ? currentSource
+                  ? "Add a character image to continue."
+                  : "Add a source performance to continue."
+                : null;
   const primary =
     active?.result && view === "studio" ? (
       <Button className="primary-action" asChild>
@@ -497,12 +491,24 @@ export function Studio({
         currentModel,
         (currentSource?.duration ?? modelProfile.maxDuration) - currentStart,
       );
+  const takeTitle =
+    active?.status === "succeeded"
+      ? demo
+        ? "Sample result"
+        : "Result"
+      : active?.status === "awaiting_approval"
+        ? "Review references"
+        : active && statusNames[active.status];
+  const workspaceTitle =
+    view === "library"
+      ? "Your takes"
+      : (takeTitle ??
+        (currentSource ? "Source performance" : "Sample comparison"));
   if (capabilities.isPending) return <StudioLoading />;
   return (
     <div
       className={cn(
         "studio-shell",
-        demo && "is-demo",
         view === "library" && "library-open",
         "mobile-" + mobilePanel,
       )}
@@ -549,20 +555,15 @@ export function Studio({
               <CircleHelp size={19} />
             </button>
           </Hint>
-          <Hint label="Studio connections">
+          <Hint label={settingsLabel}>
             <button
               className="rail-item"
-              aria-label="Studio connections"
+              aria-label={settingsLabel}
               onClick={() => setSettingsOpen(true)}
             >
               <Settings2 size={19} />
             </button>
           </Hint>
-          {demo && (
-            <span className="preview-avatar">
-              <FlaskConical size={16} />
-            </span>
-          )}
         </div>
       </aside>
       <div className="studio-main">
@@ -573,37 +574,15 @@ export function Studio({
               aria-label={APP_NAME}
               onClick={() => fresh()}
             >
-              {APP_NAME}
+              <BytePlusMark />
+              <span>{APP_NAME}</span>
             </button>
             <span className="breadcrumb-divider">/</span>
-            <span className="workspace-name">
-              {demo ? "Preview workspace" : "Local workspace"}
-            </span>
-            <ChevronRight className="crumb-chevron" size={13} />
             <span className="current-page">
               {view === "library" ? "Your takes" : "Character studio"}
             </span>
           </div>
           <div className="topbar-actions">
-            <span
-              className="modelark-badge"
-              role="img"
-              aria-label="Powered by BytePlus ModelArk"
-            >
-              <BytePlusMark />
-              <span>BytePlus</span>
-            </span>
-            {demo ? (
-              <span className="preview-badge">
-                <FlaskConical size={12} />
-                Preview
-              </span>
-            ) : (
-              <span className="private-badge">
-                <ShieldCheck size={12} />
-                Local studio
-              </span>
-            )}
             <button
               className="topbar-icon"
               aria-label="Your takes"
@@ -613,43 +592,13 @@ export function Studio({
             </button>
             <button
               className="topbar-icon"
-              aria-label="Studio connections"
+              aria-label={settingsLabel}
               onClick={() => setSettingsOpen(true)}
             >
               <Settings2 size={17} />
             </button>
           </div>
         </header>
-        {demo && (
-          <div className="preview-notice">
-            <span>
-              <FlaskConical size={13} />
-              <strong>Interactive preview</strong>
-              <span>Simulated results. No credits used.</span>
-            </span>
-            <div>
-              <label>
-                Scenario
-                <select
-                  aria-label="Preview scenario"
-                  value={scenario}
-                  onChange={(e) => setScenario(e.target.value as DemoScenario)}
-                  disabled={busy || pending}
-                >
-                  <option value="success">Successful take</option>
-                  <option value="failure">Provider failure</option>
-                </select>
-              </label>
-              <Link
-                href="/"
-                title="Return to live studio"
-                aria-label="Return to live studio"
-              >
-                <X size={15} />
-              </Link>
-            </div>
-          </div>
-        )}
         <div
           className="mobile-workspace-nav"
           role="group"
@@ -677,7 +626,7 @@ export function Studio({
               setMobilePanel("preview");
             }}
           >
-            Preview{active?.status === "awaiting_approval" && <i />}
+            Canvas{active?.status === "awaiting_approval" && <i />}
           </button>
           <button
             aria-pressed={view === "library"}
@@ -700,15 +649,8 @@ export function Studio({
             }}
           >
             <div className="controls-heading">
-              <div className="eyebrow-label">
-                <ScanFace size={13} />
-                CHARACTER SWAP<span>{modelProfile.label}</span>
-              </div>
-              <h1>
-                A new character.
-                <br />
-                <span>Every move, still yours.</span>
-              </h1>
+              <h1>{active ? "Take settings" : "Create a take"}</h1>
+              <span className="model-pill">{modelProfile.label}</span>
             </div>
             <div className="controls-scroll">
               <div className="field-heading">
@@ -1166,7 +1108,7 @@ export function Studio({
               <p aria-live="polite">{guidance}</p>
               {!demo && demoAvailable && (
                 <Link className="explore-preview" href="/preview">
-                  Explore the interactive preview
+                  Open sample workspace
                   <ArrowRight size={12} />
                 </Link>
               )}
@@ -1174,34 +1116,7 @@ export function Studio({
           </section>
           <main className="studio-workspace" id="workspace">
             <div className="workspace-heading">
-              <div>
-                <span className="eyebrow-label">
-                  {view === "library"
-                    ? "YOUR CREATIVE LIBRARY"
-                    : active
-                      ? "YOUR NEXT TAKE"
-                      : "THE POSSIBILITIES START HERE"}
-                </span>
-                <h2>
-                  {view === "library"
-                    ? "Every take, in one place."
-                    : active
-                      ? active.status === "succeeded"
-                        ? "Your new take is ready."
-                        : active.status === "failed"
-                          ? "This take couldn’t finish."
-                          : active.status === "needs_attention"
-                            ? "This take needs attention."
-                            : active.status === "cancelled"
-                              ? "Your take was cancelled."
-                              : active.status === "awaiting_approval"
-                                ? "A moment to make it yours."
-                                : "Let’s make it move."
-                      : currentSource
-                        ? "Your performance, reimagined."
-                        : "One performance. Endless characters."}
-                </h2>
-              </div>
+              <h2>{workspaceTitle}</h2>
               {active &&
               (!terminal(active.status) ||
                 active.status === "awaiting_approval") ? (
@@ -1230,13 +1145,6 @@ export function Studio({
                 </Button>
               )}
             </div>
-            {demo && active && (
-              <div className="simulation-caption">
-                <FlaskConical size={12} />
-                Mock APIs and illustrative sample video. This isn’t a live model
-                result.
-              </div>
-            )}
             {capabilities.isError && (
               <div className="workspace-error" role="alert">
                 <strong>The studio couldn’t connect.</strong>
@@ -1309,7 +1217,6 @@ export function Studio({
                           mediaBusy ||
                           enhancingPrompt
                         }
-                        demo={demo}
                       />
                     ) : (
                       <div className="input-ready-note">
@@ -1340,18 +1247,11 @@ export function Studio({
                     samplePending={sample.isPending}
                     sampleDisabled={mediaBusy || pending || enhancingPrompt}
                     canTry={demo || demoAvailable}
-                    sampleLabel={demo ? "Try this example" : "Try in preview"}
                   />
                 )}
               </>
             )}
             <footer className="canvas-footer">
-              <span>
-                <ShieldCheck size={12} />
-                {demo
-                  ? "Isolated preview workspace"
-                  : "Your local, single-user studio."}
-              </span>
               <button onClick={() => setHelpOpen(true)}>
                 How it works
                 <ArrowUpRight size={12} />
@@ -1366,86 +1266,97 @@ export function Studio({
       </div>
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent className="connections-dialog">
-          <DialogTitle>
-            {demo ? "Preview connections" : "Studio connections"}
-          </DialogTitle>
-          <DialogDescription>
-            {demo
-              ? "This workspace uses mock APIs and local sample videos. It never calls a generation provider."
-              : "Your keys stay in the local server environment. Configure these services to create."}
-          </DialogDescription>
-          <div className="connections-list">
-            {[
-              {
-                name: modelProfile.label,
-                description: "Video generation · BytePlus ModelArk",
-                ready: capabilities.data?.video,
-              },
-              {
-                name: "Meta SAM 3.1",
-                description: "Subject tracking · Meta Model API",
-                ready: capabilities.data?.sam,
-              },
-              {
-                name: "Virtual Portrait",
-                description: "Video reference registration",
-                ready: capabilities.data?.portraits,
-              },
-              {
-                name: "BytePlus TOS",
-                description: "Private source files and finished videos",
-                ready: capabilities.data?.storage,
-              },
-              {
-                name: SEEDREAM_NAME,
-                description: "Optional scene-image preparation",
-                ready: capabilities.data?.image,
-              },
-              {
-                name: "Prompt enhancement",
-                description:
-                  "Optional · refine your direction before generation",
-                ready: capabilities.data?.promptEnhancement,
-              },
-              {
-                name: "Processing worker",
-                description: "Background processing and saved progress",
-                ready: !!capabilities.data?.workerSeenAt,
-              },
-            ].map((item) => (
-              <div key={item.name}>
-                <span
-                  className={cn("connection-symbol", item.ready && "ready")}
-                >
-                  {item.ready ? <Check size={15} /> : <Settings2 size={15} />}
-                </span>
-                <div>
-                  <strong>{item.name}</strong>
-                  <p>{item.description}</p>
-                </div>
-                <span className="connection-state">
-                  {demo
-                    ? "Simulated"
-                    : item.ready
-                      ? "Configured"
-                      : "Needs setup"}
-                </span>
-              </div>
-            ))}
-          </div>
-          <p className="dialog-footnote">
-            {demo
-              ? "Preview takes are saved separately on this computer. Every completed result is an illustrative sample."
-              : "Configure connections in your local environment file. Model access and eligible references are still required."}
-          </p>
+          <DialogTitle>{settingsLabel}</DialogTitle>
           {demo ? (
-            <Button variant="outline" asChild>
-              <Link href="/">
-                Return to live studio
-                <ArrowRight size={14} />
-              </Link>
-            </Button>
-          ) : null}
+            <>
+              <DialogDescription className="sr-only">
+                Choose the outcome for the next sample take.
+              </DialogDescription>
+              <label className="sample-outcome">
+                <span>Sample outcome</span>
+                <select
+                  value={scenario}
+                  onChange={(e) => setScenario(e.target.value as DemoScenario)}
+                  disabled={busy || pending}
+                >
+                  <option value="success">Successful take</option>
+                  <option value="failure">Provider failure</option>
+                </select>
+              </label>
+              <Button variant="outline" asChild>
+                <Link href="/">
+                  Open live studio
+                  <ArrowRight size={14} />
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <>
+              <DialogDescription>
+                Configure these services in your local environment, then restart
+                the studio and worker.
+              </DialogDescription>
+              <div className="connections-list">
+                {[
+                  {
+                    name: modelProfile.label,
+                    description: "Video generation · BytePlus ModelArk",
+                    ready: capabilities.data?.video,
+                  },
+                  {
+                    name: "Meta SAM 3.1",
+                    description: "Subject tracking · Meta Model API",
+                    ready: capabilities.data?.sam,
+                  },
+                  {
+                    name: "Virtual Portrait",
+                    description: "Video reference registration",
+                    ready: capabilities.data?.portraits,
+                  },
+                  {
+                    name: "BytePlus TOS",
+                    description: "Private source files and finished videos",
+                    ready: capabilities.data?.storage,
+                  },
+                  {
+                    name: SEEDREAM_NAME,
+                    description: "Optional scene-image preparation",
+                    ready: capabilities.data?.image,
+                  },
+                  {
+                    name: "Prompt enhancement",
+                    description:
+                      "Optional · refine your direction before generation",
+                    ready: capabilities.data?.promptEnhancement,
+                  },
+                  {
+                    name: "Processing worker",
+                    description: "Background processing and saved progress",
+                    ready: !!capabilities.data?.workerSeenAt,
+                  },
+                ].map((item) => (
+                  <div key={item.name}>
+                    <span
+                      className={cn("connection-symbol", item.ready && "ready")}
+                    >
+                      {item.ready ? (
+                        <Check size={15} />
+                      ) : (
+                        <Settings2 size={15} />
+                      )}
+                    </span>
+                    <div>
+                      <strong>{item.name}</strong>
+                      <p>{item.description}</p>
+                    </div>
+                    <span className="connection-state">
+                      {item.ready ? "Configured" : "Needs setup"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </DialogContent>
       </Dialog>
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>

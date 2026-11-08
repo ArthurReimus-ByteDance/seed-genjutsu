@@ -135,9 +135,9 @@ Click **Enhance prompt** below the direction field to refine it in place with By
 
 ## Interactive preview
 
-Set DEMO_ENABLED=true and restart the web server. Open **http://localhost:3107/preview**, or select Try this example in the main studio. The preview is also account-free and uses its own local file index, separate from real takes.
+Set DEMO_ENABLED=true and restart the web server. Open **http://localhost:3107/preview**, or select **Try sample** in the main studio. The sample workspace uses its own local file index, separate from real takes.
 
-Its HTTP routes perform actual uploads, clip preparation and downloads, with simulated model stages and illustrative videos. The Scenario selector chooses success or provider failure for enhancement and generation. No Meta, ModelArk, Virtual Portrait or TOS request is submitted from the preview. The default flag is false.
+Its HTTP routes perform actual uploads, clip preparation and downloads, with simulated model stages and illustrative videos. In **Sample settings**, choose **Sample outcome** to test success or provider failure for enhancement and generation. No Meta, ModelArk, Virtual Portrait or TOS request is submitted from the preview. The default flag is false.
 
 [UI review and sample provenance](docs/ui-preview.md) contains exact checks and the built-in imagegen prompts.
 

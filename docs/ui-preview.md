@@ -4,8 +4,9 @@ The original preview was reviewed on 2026-11-05 in Chrome against the running ap
 
 ## Experience changes
 
-- Paired sample media fills the empty canvas. The studio uses black and charcoal surfaces, with BytePlus blue for primary actions, selected controls and progress. The BytePlus mark identifies the generation provider in the header and model picker.
-- Persistent primary actions keep preparation, approval and download within reach. On phones, Inputs, Preview and Your takes separate the workspace without horizontal scrolling.
+- Paired sample media fills the empty canvas. The studio uses black and charcoal surfaces, with BytePlus blue for primary actions, selected controls and progress. The BytePlus mark sits beside the studio name and identifies the provider in the model picker.
+- Persistent primary actions keep preparation, approval and download within reach. On phones, Inputs, Canvas and Your takes separate the workspace.
+- Sample settings holds the outcome selector and the link to the live studio. Completed sample takes use a short **Sample result** heading.
 - Preparation stops at an explicit review gate. The optional scene look is visible alongside the source and subject before approval.
 - Progress, saved activity, cancellation, failure recovery and uncertain provider submission each have distinct explanations. Cancel remains available at review.
 - Saved takes support search, Ready and Needs attention filters, empty-search recovery, and reopening completed media. Create a variation preserves references and direction; New take clears them.
@@ -44,7 +45,7 @@ The browser used actual mock HTTP endpoints without network interception. Checke
 2. Play synchronized comparison and download the MP4. FFprobe confirms the browser download is four seconds. Source playback follows the selected offset; result playback stops at its end.
 3. At 390px, upload the actual mock MP4 and character JPG through the file chooser, skip optional scene preparation, reach review, approve a simulated failure and recover its retained inputs.
 4. Upload an 18-second fixture, type a 12-second duration naturally, prepare and cancel at review. Refresh shows the persisted Cancelled state.
-5. Filter Ready and Needs attention, search for no matches, clear filters, and reopen the completed result. Refresh a completed deep link on mobile and land in Preview.
+5. Filter Ready and Needs attention, search for no matches, clear filters, and reopen the completed result. Refresh a completed deep link on mobile and land in Canvas.
 6. Open connections at 320px. The dialog remains within the viewport and scrolls; the page has no horizontal overflow. Reset the browser viewport after checks.
 7. In the production build, create a variation from a completed take and replace its video. Prepare remains disabled with an Uploading references label until the replacement is ready; the previous clip cannot be submitted during that interval.
 

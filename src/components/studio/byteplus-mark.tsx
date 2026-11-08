@@ -1,6 +1,6 @@
 import Image from "next/image";
 
-export function BytePlusMark({ size = 20 }: { size?: number }) {
+export function BytePlusMark({ size = 24 }: { size?: number }) {
   return (
     <Image
       className="byteplus-mark"
