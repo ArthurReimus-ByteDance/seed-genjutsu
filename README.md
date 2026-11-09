@@ -232,20 +232,23 @@ The app binds to 127.0.0.1. API checks reject foreign origins, cross-site reques
 | SEEDANCE_2_MODEL                           | Seedance 2 binding; defaults to dreamina-seedance-2-0-260128                     |
 | SEEDANCE_2_5_MODEL                         | Seedance 2.5 binding; defaults to dreamina-seedance-2-5-260628                   |
 | META_API_KEY                               | Meta Model API key with SAM 3.1 access; model sam-3.1                            |
-| BYTEPLUS_ACCESS_KEY, BYTEPLUS_SECRET_KEY   | Separate Virtual Portrait OpenAPI credentials                                    |
-| BYTEPLUS_SESSION_TOKEN                     | Optional provider STS token                                                      |
+| BYTEPLUS_ACCESS_KEY, BYTEPLUS_SECRET_KEY   | Shared BytePlus IAM credentials for TOS and Virtual Portrait OpenAPI              |
+| BYTEPLUS_SESSION_TOKEN                     | Optional STS token shared by TOS and Virtual Portrait                            |
 | BYTEPLUS_PROJECT                           | Defaults to default                                                              |
 | BYTEPLUS_ASSET_GROUP                       | Optional existing AIGC group; otherwise its ID is saved in the local workspace   |
 | SEEDREAM_MODEL                             | Optional Seedream 5.0 Pro model ID: dola-seedream-5-0-pro-260628                 |
 | STORAGE_MODE                               | local for development; tos for signed provider references                        |
-| TOS_ACCESS_KEY, TOS_SECRET_KEY, TOS_BUCKET | Private TOS bucket credentials                                                   |
-| TOS_SESSION_TOKEN                          | Optional TOS STS token                                                           |
+| TOS_BUCKET                                 | Private TOS bucket; uses the shared BytePlus IAM credentials                      |
 | TOS_REGION, TOS_ENDPOINT                   | Match the bucket region; default ap-southeast-1 and its public BytePlus endpoint |
 | APP_URL                                    | Loopback browser origin, default http://localhost:3107                           |
 | MEDIA_ROOT                                 | Absolute directory shared by web and worker                                      |
 | MAX_DAILY_JOBS, MAX_ACTIVE_JOBS            | Local safeguards against accidental duplicate or excessive generation            |
 
 Use a public TOS endpoint so BytePlus and the browser can read signed references. Meta SAM receives bounded inline prepared-video bytes because its fetch service rejected the signed TOS URL. Objects remain private and signed GET URLs expire after six hours; uploads request AES256 server-side encryption. Provider keys remain server-side.
+
+Configure `BYTEPLUS_ACCESS_KEY` and `BYTEPLUS_SECRET_KEY` once for both TOS and Ark/Virtual Portrait. The IAM identity must have access to the configured bucket and the required Virtual Portrait asset operations; sharing credentials does not grant additional permissions. Keep permissions scoped to the resources this studio needs. Temporary credentials also share `BYTEPLUS_SESSION_TOKEN`; rotate all three together and restart the web server and worker. `BYTEPLUS_API_KEY` remains a separate ModelArk bearer key.
+
+For existing installations, migrate the chosen IAM pair to `BYTEPLUS_ACCESS_KEY` / `BYTEPLUS_SECRET_KEY` and its STS token, if any, to `BYTEPLUS_SESSION_TOKEN`. Remove the old `TOS_ACCESS_KEY`, `TOS_SECRET_KEY`, and `TOS_SESSION_TOKEN` settings; they are no longer read. TOS bucket, region, and endpoint settings are unchanged.
 
 Both video models share `BYTEPLUS_API_KEY`. Confirm account entitlement for each selected binding. Existing local configuration has been moved from `SEEDANCE_MODEL` to the two fields above; custom ModelArk endpoint IDs can be supplied per model.
 

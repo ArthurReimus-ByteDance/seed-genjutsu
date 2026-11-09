@@ -10,8 +10,8 @@ export const GET = (request: Request) =>
     const storage =
       env.STORAGE_MODE === "tos" &&
       !!env.TOS_BUCKET &&
-      !!env.TOS_ACCESS_KEY &&
-      !!env.TOS_SECRET_KEY;
+      !!env.BYTEPLUS_ACCESS_KEY &&
+      !!env.BYTEPLUS_SECRET_KEY;
     const portraits = !!env.BYTEPLUS_ACCESS_KEY && !!env.BYTEPLUS_SECRET_KEY;
     const video = !!env.BYTEPLUS_API_KEY;
     return ok({
