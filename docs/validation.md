@@ -1,5 +1,31 @@
 # Validation snapshot
 
+## Core workflows live validation - 2026-11-09
+
+**Edit Elements, Motion Transfer, and Restyle each completed one real four-second 480p Seedance 2.5 generation.** Exactly three distinct tasks were accepted with `dreamina-seedance-2-5-260628`, without retries, SAM masking, prompt enhancement, or optional Seedream preparation. Actual uploads, private TOS, FFmpeg original-video preparation, browser review and approval, Virtual Portrait registration and Active status, worker polling, local audio finishing, and delivered media were exercised.
+
+| Workflow        | Visual Observation                                                                             | Delivered File                                         |
+| --------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Edit Elements   | The charcoal jacket becomes red; the sampled pose and gallery remain.                          | 854x480 H.264/AAC, 24 FPS, 89 frames, 3.708333 seconds |
+| Motion Transfer | The referenced fictional android and lavender jacket appear with the source pose and gallery.  | 854x480 H.264/AAC, 24 FPS, 97 frames, 4.041667 seconds |
+| Restyle         | Watercolor treatment applies to the performer and gallery while retaining sampled composition. | 854x480 H.264/AAC, 24 FPS, 89 frames, 3.708333 seconds |
+
+All three downloads match the saved-result SHA-256 and play completely in fresh Chrome without media errors. Desktop and 390px mobile result screens show the measured output metadata. Anonymous source access to TOS returned 403. The current code passed **134 automated tests, ESLint, typechecking, the production build, 95 isolated local API/worker checks, and all four simulated preview workflows** before the paid submissions.
+
+The input is a fictional generated still animated with a gentle camera glide and silent AAC. Both prepared inputs and results decode to silence. These runs do not qualify articulated motion, dialogue synchronization, real-person authorization, exact typography, all operations/reference roles/presets, higher resolutions, or longer durations. Edit/restyle outputs are about 0.292 seconds shorter than the selected input. Total provider telemetry is 225,374 tokens, not a verified settlement bill.
+
+Temporary STS credentials were used only in an isolated runtime, with no permanent configuration changes. The owned web and worker processes were stopped; test media, Virtual Portrait assets, and accepted-ID workspace records were retained. **The ordinary configuration currently remains local and needs secure TOS/portrait credential injection for live use.** Historical configuration statements below describe their dated tests, not current credential readiness. Application changes remain uncommitted.
+
+The [local validation report](../output/live-core-workflows-2026-11-09/VALIDATION.md) links outputs, sampled frames, task IDs, playback, privacy checks, and sanitized telemetry. See [workflow contracts](workflows.md) for routing and input constraints.
+
+### Fresh three-call repeat
+
+Arthur separately approved a second batch with the same samples and the ModelArk key in `.env`. **All three fresh Seedance 2.5 calls succeeded**, with three new task IDs, cache-matching downloads, and complete Chrome playback. The two batches contain six distinct accepted tasks, without retries or extra paid stages. Repeat outputs measured 3.708333 seconds for Edit Elements/Restyle and 4.041667 seconds for Motion Transfer, preserving decoded silence.
+
+The fresh batch passed 134 tests, lint, types, a new production build, 99 credential-free local API/worker observations, and all four simulated preview workflows. Runtime credentials stayed in memory, permanent settings remained unchanged, and owned services stopped afterward. The same still-based fixture does not expand motion or dialogue qualification. See the [fresh outputs and provider task proof](../output/live-core-workflows-repeat-2026-11-09/VALIDATION.md).
+
+## Earlier validation
+
 **2026-11-08 audio choices.** The running studio retained **Generate new** after refresh and when reusing a take. **Keep original** was selected by default. Both controls fit 390px and 320px layouts, and keyboard selection worked. A real four-second SAM 3.1 run from a fictional clip with a test tone reached reference review with 96 tracked frames and zero parser diagnostics. FFprobe confirmed audio in the prepared clip and a video-only track in both the remuxed SAM input and the masked preview. The signed TOS download matched the stored mask. All 31 tests, lint, types, the build, 76 local API/worker checks and 89 preview checks passed. The live run below verifies both final soundtrack modes.
 
 The [2026-11-07 pre-E2E review](pre-e2e-review.md) fixed startup paths, phone rotation, audio finishing, review cancellation, cache recovery and UI state/navigation defects. Thirty focused tests, static checks, a fresh disposable API/worker run, preview smoke, a read-only live TOS recovery and targeted browser regressions passed.
@@ -33,10 +59,10 @@ One `POST /api/jobs` with `reviewBeforeGeneration: false` and stored barn footag
 
 The production studio on loopback port 3107 and its worker ran the browser flows against real DeepSeek, Meta SAM 3.1, BytePlus TOS, Seedream 5.0 Pro, Virtual Portrait and ModelArk. Both completed takes use animated motion from [Blender Studio’s Wing It!](https://studio.blender.org/projects/wing-it/), licensed under [CC BY 4.0](https://studio.blender.org/projects/wing-it/pages/licensing/).
 
-| Take | Selected range and settings | Hosted result |
-| --- | --- | --- |
-| Barn entrance | Film 23.7–28.7s, Seedance 2 at 480p, Keep original, scene preparation off | SAM tracked 120/120 frames. Virtual Portrait became Active. ModelArk reported `generate_audio: false` and returned video only. Local audio finishing preserved all 121 generated frames. The delivered 864×496 MP4 is 5.042s. Decoded audio matches the prepared source at 0.9997 correlation with zero measured offset. |
-| Cockpit | Film 149.3–158.8s, Seedance 2.5 at 480p, Generate new, scene preparation on | SAM tracked 221/228 frames and left the first seven frames uncovered. A real 2048×1152 Seedream image retained the gray copilot. Virtual Portrait became Active. ModelArk reported `generate_audio: true` and returned an 854×480, 9.376s MP4 with audible AAC. The delivered file matches the provider’s bytes and its soundtrack differs from the source. |
+| Take          | Selected range and settings                                                 | Hosted result                                                                                                                                                                                                                                                                                                                                               |
+| ------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Barn entrance | Film 23.7–28.7s, Seedance 2 at 480p, Keep original, scene preparation off   | SAM tracked 120/120 frames. Virtual Portrait became Active. ModelArk reported `generate_audio: false` and returned video only. Local audio finishing preserved all 121 generated frames. The delivered 864×496 MP4 is 5.042s. Decoded audio matches the prepared source at 0.9997 correlation with zero measured offset.                                    |
+| Cockpit       | Film 149.3–158.8s, Seedance 2.5 at 480p, Generate new, scene preparation on | SAM tracked 221/228 frames and left the first seven frames uncovered. A real 2048×1152 Seedream image retained the gray copilot. Virtual Portrait became Active. ModelArk reported `generate_audio: true` and returned an 854×480, 9.376s MP4 with audible AAC. The delivered file matches the provider’s bytes and its soundtrack differs from the source. |
 
 Both comparisons played to the end in the browser. Both browser download hashes match the private TOS deliveries and local files. The cockpit replacement and copilot are visible throughout the sampled output, with pose differences from the source. The barn output retains the doorway and detached visor while following the main movement beats.
 
@@ -88,12 +114,12 @@ The local JSON index is intended for one computer and a modest catalog. It has p
 
 ## Representative integration work remaining
 
-| Area              | Remaining verification                                                                                                                       |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| SAM tracking      | Longer live-action clips, occlusion and re-entry. The archival test exposed misses and ambiguous tracks on grainy footage.                   |
-| Asset eligibility | More authorized reference types beyond the accepted animated silhouettes.                                                                    |
-| Video quality     | Hosted generation at the 15/30-second limits and higher resolutions, dialogue timing, and repeated identity consistency.                    |
-| Scene preparation | Controlled same-model A/B comparison with and without the optional image, including cost per usable result.                                  |
+| Area              | Remaining verification                                                                                                     |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| SAM tracking      | Longer live-action clips, occlusion and re-entry. The archival test exposed misses and ambiguous tracks on grainy footage. |
+| Asset eligibility | More authorized reference types beyond the accepted animated silhouettes.                                                  |
+| Video quality     | Hosted generation at the 15/30-second limits and higher resolutions, dialogue timing, and repeated identity consistency.   |
+| Scene preparation | Controlled same-model A/B comparison with and without the optional image, including cost per usable result.                |
 
 See [UI review and exact sample prompts](ui-preview.md).
 

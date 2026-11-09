@@ -7,6 +7,10 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { request as httpRequest } from "node:http";
+import { Readable } from "node:stream";
+import { assertSmokeTarget } from "./smoke-safety.mjs";
+if (!process.env.STUDIO_SMOKE_INSTANCE)
+  throw new Error("Use npm run smoke to start an owned disposable instance.");
 nextEnv.loadEnvConfig(process.cwd());
 const { env } = await import("../src/env");
 const { workspace } = await import("../src/server/workspace");
@@ -91,6 +95,104 @@ try {
   const health = await json("/health", 200);
   assert.equal(health.persistence, "files");
   const capabilities = await json("/capabilities", 200);
+  assertSmokeTarget(process.env.STUDIO_SMOKE_INSTANCE, health, capabilities);
+  assert.equal(capabilities.workflows.length, 4);
+  assert.equal(
+    capabilities.workflows.filter(
+      (workflow: { requiresSam: boolean }) => workflow.requiresSam,
+    ).length,
+    1,
+  );
+  const presets = await json("/presets?workflow=restyle", 200);
+  assert.ok(
+    presets.presets.some(
+      (preset: { id: string }) => preset.id === "watercolor",
+    ),
+  );
+  await json("/presets?workflow=unknown", 400);
+  const oversizedJson = JSON.stringify({ prompt: "x".repeat(32001) });
+  for (const fixedLength of [true, false]) {
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const call = httpRequest(
+        base + "/api/jobs",
+        {
+          agent: false,
+          method: "POST",
+          headers: {
+            Origin: new URL(env.APP_URL).origin,
+            "Content-Type": "application/json",
+            ...(fixedLength
+              ? { "Content-Length": Buffer.byteLength(oversizedJson) }
+              : {}),
+          },
+        },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode);
+        },
+      );
+      call.setTimeout(10000, () =>
+        call.destroy(new Error("Oversized request timed out.")),
+      );
+      call.on("error", reject);
+      call.write(oversizedJson.slice(0, 16000));
+      call.end(oversizedJson.slice(16000));
+    });
+    assert.equal(status, 413);
+    checks.push(
+      (fixedLength ? "Fixed-length" : "Chunked") + " oversized JSON → 413",
+    );
+  }
+  for (const fixedLength of [true, false]) {
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const chunk = Buffer.alloc(65536, 0x61);
+      const source = Readable.from(
+        (function* () {
+          for (let index = 0; index < 1696; index++) yield chunk;
+        })(),
+        { objectMode: false, highWaterMark: 65536 },
+      );
+      const call = httpRequest(
+        base + "/api/uploads",
+        {
+          agent: false,
+          method: "POST",
+          headers: {
+            Origin: new URL(env.APP_URL).origin,
+            "Content-Type": "multipart/form-data; boundary=fixture",
+            ...(fixedLength ? { "Content-Length": 106 * 1024 * 1024 } : {}),
+          },
+        },
+        (response) => {
+          source.unpipe(call);
+          source.destroy();
+          call.end();
+          response.resume();
+          resolve(response.statusCode);
+        },
+      );
+      call.setTimeout(15000, () =>
+        call.destroy(new Error("Oversized upload timed out.")),
+      );
+      call.on("error", reject);
+      source.on("error", (error) => call.destroy(error));
+      source.pipe(call);
+    });
+    assert.equal(status, 413);
+    checks.push(
+      (fixedLength ? "Fixed-length" : "Chunked") + " 106 MiB multipart → 413",
+    );
+  }
+  await request("/uploads", 415, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  await request("/uploads", 400, {
+    method: "POST",
+    headers: { "Content-Type": "multipart/form-data; boundary=fixture" },
+    body: "{}",
+  });
   assert.equal(capabilities.promptEnhancement, false);
   const enhanceInput = {
     prompt: "Make the performer a silver robot.",
@@ -326,7 +428,7 @@ try {
   await updateJob(review.id, {
     status: "awaiting_approval",
     stage: "review",
-    masked_id: stored.prepared_id,
+    masked_id: recoveredReview.masked.id,
     lease_owner: null,
     lease_until: null,
   });
@@ -336,13 +438,52 @@ try {
     (await until(review.id, "failed")).error ?? "",
     /Virtual Portrait/,
   );
+  for (const workflow of ["element_edit", "motion_transfer", "restyle"]) {
+    const transformation = jobSchema.parse(
+      (
+        await json("/jobs", 202, {
+          sourceId: video.id,
+          workflow,
+          model: "seedance-2.5",
+          prompt: "Transform the clip while retaining the source movement.",
+          duration: 4,
+          resolution: "480p",
+          stylePreset: workflow === "restyle" ? "watercolor" : "custom",
+          references:
+            workflow === "motion_transfer"
+              ? [{ id: randomUUID(), mediaId: character.id, role: "character" }]
+              : [],
+        })
+      ).job,
+    );
+    const ready = await until(transformation.id, "awaiting_approval");
+    assert.ok(ready.prepared);
+    assert.equal(ready.masked, null);
+    assert.equal(ready.character, null);
+    assert.equal(
+      ready.references.length,
+      workflow === "motion_transfer" ? 1 : 0,
+    );
+    const record = await jobRecord(ready.id);
+    assert.equal(record.meta_response_id, null);
+    assert.equal(record.masked_id, null);
+    await request("/media/" + ready.prepared.id, 200);
+    await json("/jobs/" + ready.id + "/approve", 200, {});
+    const rejected = await until(ready.id, "failed");
+    assert.match(rejected.error ?? "", /Virtual Portrait/);
+    assert.equal(rejected.stage, "registering");
+    checks.push(
+      workflow +
+        " prepared the real original video without SAM and stopped at missing Virtual Portrait credentials",
+    );
+  }
   const waiting = [];
   for (let i = 0; i < env.MAX_ACTIVE_JOBS; i++) {
     const item = await create();
     await updateJob(item.id, {
       status: "awaiting_approval",
       stage: "review",
-      masked_id: stored.prepared_id,
+      masked_id: recoveredReview.masked.id,
       lease_owner: null,
       lease_until: null,
     });

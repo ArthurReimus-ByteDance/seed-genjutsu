@@ -1,12 +1,13 @@
 "use client";
 import Image from "next/image";
 import { useState } from "react";
-import { ArrowRight, Layers3, Search, X } from "lucide-react";
+import { ArrowRight, Film, Layers3, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "./canvas";
 import type { Job } from "@/lib/schemas";
 import { videoModels } from "@/lib/video-models";
+import { effectiveDirection, workflows, stylePresets } from "@/lib/workflows";
 export function Library({
   jobs,
   loading,
@@ -34,7 +35,14 @@ export function Library({
           ["failed", "needs_attention", "awaiting_approval"].includes(
             job.status,
           ))) &&
-      job.prompt.toLowerCase().includes(search.toLowerCase()),
+      [
+        job.name,
+        workflows[job.config.workflow].label,
+        effectiveDirection(job.config),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(search.toLowerCase()),
   );
   return (
     <section className="library-view">
@@ -93,45 +101,67 @@ export function Library({
             {visible.length} {visible.length === 1 ? "take" : "takes"}
           </p>
           <div className="library-grid">
-            {visible.map((job) => (
-              <button
-                className="take-card"
-                key={job.id}
-                onClick={() => onSelect(job)}
-              >
-                <div className="take-poster">
-                  <Image
-                    src={
-                      job.result?.posterUrl ??
-                      job.anchor?.url ??
-                      job.source.posterUrl ??
-                      job.character.url
-                    }
-                    alt=""
-                    fill
-                    unoptimized
-                  />
-                  <StatusBadge job={job} />
-                  <span className="duration-tag">
-                    {(job.result?.duration ?? job.config.duration).toFixed(1)}s
-                  </span>
-                  <span className="open-take">
-                    <ArrowRight size={20} />
-                  </span>
-                </div>
-                <h3>{job.name}</h3>
-                <p>
-                  {new Date(job.createdAt).toLocaleDateString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                  })}
-                  <span>
-                    {job.config.resolution} ·{" "}
-                    {videoModels[job.config.model].label}
-                  </span>
-                </p>
-              </button>
-            ))}
+            {visible.map((job) => {
+              const poster =
+                job.result?.posterUrl ??
+                job.anchor?.url ??
+                job.prepared?.posterUrl ??
+                job.frame?.url ??
+                job.source.posterUrl ??
+                job.character?.url ??
+                job.references[0]?.media.url;
+              return (
+                <button
+                  className="take-card"
+                  key={job.id}
+                  onClick={() => onSelect(job)}
+                >
+                  <div className="take-poster">
+                    {poster ? (
+                      <Image
+                        src={poster}
+                        alt=""
+                        fill
+                        unoptimized
+                        sizes="(max-width: 900px) 50vw, 280px"
+                      />
+                    ) : (
+                      <Film
+                        className="take-no-poster"
+                        size={32}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <StatusBadge job={job} />
+                    <span className="duration-tag">
+                      {(job.result?.duration ?? job.config.duration).toFixed(1)}
+                      s
+                    </span>
+                    <span className="open-take">
+                      <ArrowRight size={20} />
+                    </span>
+                  </div>
+                  <h3>{job.name}</h3>
+                  <div className="take-workflow">
+                    {workflows[job.config.workflow].label}
+                    {job.config.workflow === "restyle" &&
+                    job.config.stylePreset !== "custom"
+                      ? ` · ${stylePresets[job.config.stylePreset].label}`
+                      : ""}
+                  </div>
+                  <p>
+                    {new Date(job.createdAt).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                    })}
+                    <span>
+                      {job.config.resolution} ·{" "}
+                      {videoModels[job.config.model].label}
+                    </span>
+                  </p>
+                </button>
+              );
+            })}
           </div>
         </>
       ) : (

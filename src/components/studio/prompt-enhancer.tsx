@@ -16,8 +16,9 @@ import {
   type EnhancePromptRequest,
 } from "@/lib/prompt-enhancement";
 import { type VideoModelId } from "@/lib/video-models";
+import { enhancementContextKey, type WorkflowContext } from "./workflow-state";
 
-type Props = {
+type Props = WorkflowContext & {
   prompt: string;
   model: VideoModelId;
   target: string;
@@ -36,11 +37,16 @@ type Call = {
   original: string;
   abort: AbortController;
   id: number;
+  contextKey: string;
 };
 
 export function PromptEnhancer({
   prompt,
   model,
+  workflow,
+  operation,
+  stylePreset,
+  references,
   target,
   prepareImage,
   preserveAudio,
@@ -63,6 +69,12 @@ export function PromptEnhancer({
   } | null>(null);
   const controller = useRef<AbortController | null>(null);
   const requestId = useRef(0);
+  const contextKey = enhancementContextKey({
+    workflow,
+    operation,
+    stylePreset,
+    references,
+  });
   const current = useRef({
     prompt,
     model,
@@ -70,6 +82,7 @@ export function PromptEnhancer({
     prepareImage,
     preserveAudio,
     disabled,
+    contextKey,
   });
   useLayoutEffect(() => {
     current.current = {
@@ -79,6 +92,7 @@ export function PromptEnhancer({
       prepareImage,
       preserveAudio,
       disabled,
+      contextKey,
     };
   });
   useEffect(
@@ -108,6 +122,7 @@ export function PromptEnhancer({
         (latest.target.trim() || "person") !== call.input.target ||
         latest.prepareImage !== call.input.prepareImage ||
         latest.preserveAudio !== call.input.preserveAudio ||
+        latest.contextKey !== call.contextKey ||
         !onApply(result.prompt, call.expectedPrompt)
       ) {
         setMessage({
@@ -150,23 +165,29 @@ export function PromptEnhancer({
     const input = {
       prompt: original,
       model,
+      workflow,
+      operation,
+      stylePreset,
+      references: references.map(({ role }) => ({ role })),
       target: target.trim() || "person",
       prepareImage,
       preserveAudio,
       ...(enhanced && applied ? { previousPrompt: applied.text } : {}),
     };
-    if (!enhancePromptRequestSchema.safeParse(input).success) return;
+    const parsed = enhancePromptRequestSchema.safeParse(input);
+    if (!parsed.success) return;
     controller.current?.abort();
     const abort = new AbortController();
     controller.current = abort;
     setMessage(null);
     onBusyChange(true);
     mutation.mutate({
-      input,
+      input: parsed.data,
       original,
       expectedPrompt: prompt,
       abort,
       id: ++requestId.current,
+      contextKey,
     });
   }
   function cancel() {

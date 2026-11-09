@@ -1,0 +1,45 @@
+x-app: &app
+  image: seed-genjutsu-smoke:${STUDIO_SMOKE_INSTANCE:?Smoke harness instance required}
+  build: .
+  environment:
+    NODE_ENV: production
+    APP_URL: http://127.0.0.1:3107
+    MEDIA_ROOT: /app/.data
+    STORAGE_MODE: local
+    DEMO_ENABLED: "true"
+    BYTEPLUS_API_KEY: ""
+    BYTEPLUS_ACCESS_KEY: ""
+    BYTEPLUS_SECRET_KEY: ""
+    BYTEPLUS_SESSION_TOKEN: ""
+    META_API_KEY: ""
+    SEEDREAM_MODEL: ""
+    TOS_BUCKET: ""
+    STUDIO_SMOKE_INSTANCE: ${STUDIO_SMOKE_INSTANCE}
+    WORKER_POLL_MS: "500"
+  volumes:
+    - media:/app/.data
+  init: true
+services:
+  web:
+    <<: *app
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3107/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+  worker:
+    <<: *app
+    command: ["./node_modules/.bin/tsx", "scripts/worker.ts"]
+    healthcheck:
+      test: ["CMD", "node", "scripts/worker-health.mjs"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+volumes:
+  media:

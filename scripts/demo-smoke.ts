@@ -5,6 +5,11 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { assertSmokeTarget } from "./smoke-safety.mjs";
+if (!process.env.STUDIO_SMOKE_INSTANCE)
+  throw new Error(
+    "Use npm run demo:smoke to start an owned disposable instance.",
+  );
 nextEnv.loadEnvConfig(process.cwd());
 const { env } = await import("../src/env");
 const { jobSchema, uploadSchema } = await import("../src/lib/schemas");
@@ -72,6 +77,9 @@ async function wait(c: ReturnType<typeof actor>, id: string, state: string) {
 }
 const temp = await mkdtemp(path.join(tmpdir(), "recast-preview-check-"));
 try {
+  const health = await (await fetch(base + "/api/health")).json();
+  const capabilities = await (await fetch(base + "/api/capabilities")).json();
+  assertSmokeTarget(process.env.STUDIO_SMOKE_INSTANCE, health, capabilities);
   for (const file of [
     "source.jpg",
     "character.jpg",
@@ -219,8 +227,61 @@ try {
     jobSchema.parse((await a.json("jobs/" + cancelled.id, 200)).job).status,
     "cancelled",
   );
+  const presets = (await a.json("presets?workflow=restyle", 200)).presets;
+  assert.ok(
+    presets.some((preset: { id: string }) => preset.id === "watercolor"),
+  );
+  for (const workflow of [
+    "element_edit",
+    "motion_transfer",
+    "restyle",
+  ] as const) {
+    const modeInput = {
+      sourceId: source.id,
+      workflow,
+      model: "seedance-2.5",
+      operation: "modify",
+      target: "the jacket",
+      prompt:
+        workflow === "restyle"
+          ? ""
+          : "Change the jacket to red and preserve source movement.",
+      stylePreset: workflow === "restyle" ? "watercolor" : "custom",
+      references:
+        workflow === "motion_transfer"
+          ? [
+              {
+                id: crypto.randomUUID(),
+                mediaId: character.id,
+                role: "character",
+              },
+            ]
+          : [],
+      start: 0,
+      duration: 4,
+      resolution: "480p",
+      preserveAudio: true,
+    };
+    const take = jobSchema.parse((await a.json("jobs", 202, modeInput)).job);
+    const prepared = await wait(a, take.id, "awaiting_approval");
+    assert.equal(prepared.config.workflow, workflow);
+    assert.equal(prepared.character, null);
+    assert.equal(prepared.masked, null);
+    assert.equal(prepared.anchor, null);
+    assert.ok(prepared.prepared);
+    assert.equal(prepared.references.length, modeInput.references.length);
+    await a.req("media/" + prepared.prepared.id, 200);
+    await a.json("jobs/" + take.id + "/approve", 200, {});
+    const completed = await wait(a, take.id, "succeeded");
+    assert.ok(completed.result);
+    assert.match(completed.events.at(-1)!.message, /simulated prerecorded/);
+    await a.req("media/" + completed.result.id + "?download=1", 200);
+    observations.push(
+      workflow + " → original-video review, approval and simulated download",
+    );
+  }
   const history = await a.json("jobs", 200);
-  assert.equal(history.jobs.length, initialCount + 3);
+  assert.equal(history.jobs.length, initialCount + 6);
   const foreign = await fetch(base + "/api/demo/samples", {
     method: "POST",
     headers: { Origin: "https://untrusted.example" },
@@ -241,7 +302,7 @@ try {
     ),
   );
   console.log(
-    "PASS: preview success, review gate, optional scene branch, failure, cancellation, separate local workspace, uploads and four-second download; no providers called.",
+    "PASS: all four preview workflows, original-video review, preset discovery, failure, cancellation, isolated workspace, uploads and sample downloads; no providers called.",
   );
 } finally {
   await rm(temp, { recursive: true, force: true });

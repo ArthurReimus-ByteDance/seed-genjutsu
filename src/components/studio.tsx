@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm, useWatch } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import {
   ArrowRight,
   ArrowDownToLine,
@@ -44,10 +43,11 @@ import {
 } from "@/components/ui/tooltip";
 import { UploadTile } from "./upload-tile";
 import { api, demoApi, studioQueryKeys, type DemoScenario } from "@/lib/api";
+import { reconcileJob } from "@/lib/studio-cache";
 import {
   createJobSchema,
-  generationPromptSchema as promptSchema,
   terminal,
+  type CreateJob,
   type Upload,
   type Job,
 } from "@/lib/schemas";
@@ -61,6 +61,22 @@ import {
 import { BytePlusMark } from "./studio/byteplus-mark";
 import { Library } from "./studio/library";
 import { PromptEnhancer } from "./studio/prompt-enhancer";
+import { WorkflowControls } from "./studio/workflow-controls";
+import { ReferenceTray } from "./studio/reference-tray";
+import {
+  switchDirection,
+  moveReference,
+  workflowSettings,
+  workflowConnected,
+  workflowInputIssue,
+  reviewMedia,
+  type StudioReference,
+} from "./studio/workflow-state";
+import {
+  workflows,
+  type WorkflowId,
+  type StylePresetId,
+} from "@/lib/workflows";
 import { StudioLoading } from "./studio/loading";
 import { APP_NAME, SEEDREAM_NAME } from "@/lib/branding";
 import {
@@ -68,6 +84,7 @@ import {
   videoModels,
   videoModelIds,
   clampClipDuration,
+  normalizeClip,
   type VideoModelId,
 } from "@/lib/video-models";
 import {
@@ -128,6 +145,11 @@ export function Studio({
     [duration, setDuration] = useState(6),
     [resolution, setResolution] = useState<"480p" | "720p" | "1080p">("720p");
   const [model, setModel] = useState<VideoModelId>(DEFAULT_VIDEO_MODEL);
+  const [workflow, setWorkflow] = useState<WorkflowId>("character_swap");
+  const [references, setReferences] = useState<StudioReference[]>([]);
+  const [operation, setOperation] = useState<CreateJob["operation"]>("modify");
+  const [stylePreset, setStylePreset] = useState<StylePresetId>("custom");
+  const directions = useRef<Partial<Record<WorkflowId, string>>>({});
   const [enhancingPrompt, setEnhancingPrompt] = useState(false);
   const [draftSession, setDraftSession] = useState(0);
   const sampleContext = useRef(0);
@@ -145,8 +167,10 @@ export function Studio({
   const [uploading, setUploading] = useState({
     video: false,
     character: false,
+    references: false,
   });
-  const mediaBusy = uploading.video || uploading.character;
+  const mediaBusy =
+    uploading.video || uploading.character || uploading.references;
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [startDraft, setStartDraft] = useState<string | null>(null);
   const [durationDraft, setDurationDraft] = useState<string | null>(null);
@@ -156,7 +180,6 @@ export function Studio({
   const [advanced, setAdvanced] = useState(false),
     [scenario, setScenario] = useState<DemoScenario>("success");
   const form = useForm<{ prompt: string }>({
-    resolver: zodResolver(promptSchema),
     defaultValues: { prompt: defaultPrompt },
   });
   const prompt = useWatch({ control: form.control, name: "prompt" });
@@ -179,6 +202,8 @@ export function Studio({
     queryKey: keys.job(selectedId ?? ""),
     queryFn: ({ signal }) => apiClient.job(selectedId!, signal),
     enabled: !!selectedId,
+    staleTime: 0,
+    refetchOnMount: "always",
     refetchInterval: (q) =>
       q.state.data && !terminal(q.state.data.status)
         ? demo
@@ -188,9 +213,23 @@ export function Studio({
   });
   const active = selectedId ? generation.data : null,
     options = active?.config,
-    currentSource = active?.source ?? source,
-    currentCharacter = active?.character ?? character;
-  const currentModel = options?.model ?? model;
+    currentSource = active ? active.source : source,
+    currentCharacter = active ? active.character : character;
+  const draftSettings = workflowSettings({
+    workflow,
+    model,
+    prepareImage,
+    character,
+    references,
+  });
+  const currentWorkflow = options?.workflow ?? workflow;
+  const swap = currentWorkflow === "character_swap";
+  const currentReferences = active ? active.references : references;
+  const currentModel = options?.model ?? draftSettings.model;
+  const currentPrepareImage =
+    options?.prepareImage ?? draftSettings.prepareImage;
+  const currentOperation = options?.operation ?? operation;
+  const currentStylePreset = options?.stylePreset ?? stylePreset;
   const currentPreserveAudio = options?.preserveAudio ?? preserveAudio;
   const modelProfile = videoModels[currentModel];
   const busy = !!active && !terminal(active.status);
@@ -199,17 +238,20 @@ export function Studio({
     setTab(null);
     setView("studio");
     setMobilePanel("preview");
-    client.setQueryData(keys.job(job.id), job);
+    void client.invalidateQueries({ queryKey: keys.job(job.id), exact: true });
     router.replace(base + "?job=" + job.id, { scroll: false });
   }
   async function refresh(job: Job) {
-    select(job);
-    await client.invalidateQueries({ queryKey: keys.jobs });
+    await reconcileJob(client, keys, job);
   }
   const create = useMutation({
     mutationFn: (input: ReturnType<typeof createJobSchema.parse>) =>
       apiClient.create(input, demo ? scenario : undefined),
-    onSuccess: refresh,
+    onMutate: () => sampleContext.current,
+    onSuccess: async (job, _input, session) => {
+      await refresh(job);
+      if (session === sampleContext.current) select(job);
+    },
     onError: (error) => toast.error(error.message),
   });
   const approve = useMutation({
@@ -238,6 +280,11 @@ export function Studio({
       router.replace(base, { scroll: false });
       setSource(refs.source);
       setCharacter(refs.character);
+      setWorkflow("character_swap");
+      setReferences([]);
+      setOperation("modify");
+      setStylePreset("custom");
+      directions.current = {};
       setDuration(6);
       setStart(0);
       setTarget("person in a black jacket");
@@ -279,6 +326,11 @@ export function Studio({
     setStart(0);
     setDuration(6);
     setModel(DEFAULT_VIDEO_MODEL);
+    setWorkflow("character_swap");
+    setReferences([]);
+    setOperation("modify");
+    setStylePreset("custom");
+    directions.current = {};
     setTarget("person");
     setPrepareImage(false);
     setPreserveAudio(true);
@@ -305,6 +357,11 @@ export function Studio({
     setDurationDraft(null);
     setSource(active.source);
     setCharacter(active.character);
+    setWorkflow(active.config.workflow);
+    setReferences(active.references);
+    setOperation(active.config.operation);
+    setStylePreset(active.config.stylePreset);
+    directions.current = { [active.config.workflow]: active.prompt };
     setStart(active.config.start);
     setDuration(active.config.duration);
     setModel(active.config.model);
@@ -320,9 +377,44 @@ export function Studio({
   }
   const connected =
     demo ||
-    (!!capabilities.data &&
-      !capabilities.data.missing.length &&
-      !!capabilities.data.workerSeenAt);
+    workflowConnected(capabilities.data, currentWorkflow, currentPrepareImage);
+  function applyClip(
+    nextStart = Number(startDraft ?? start),
+    nextDuration = Number(durationDraft ?? duration),
+    nextModel = currentModel,
+  ) {
+    const clip = normalizeClip({
+      start: nextStart,
+      duration: nextDuration,
+      sourceDuration: source?.duration ?? null,
+      model: nextModel,
+    });
+    setStart(clip.start);
+    setDuration(clip.duration);
+    setStartDraft(null);
+    setDurationDraft(null);
+    return clip;
+  }
+  function changeWorkflow(nextWorkflow: WorkflowId) {
+    const next = switchDirection(
+      {
+        workflow,
+        prompt: form.getValues("prompt"),
+        directions: directions.current,
+      },
+      nextWorkflow,
+    );
+    directions.current = next.directions;
+    resetDraftSession();
+    setWorkflow(nextWorkflow);
+    setTab(null);
+    form.reset({ prompt: next.prompt });
+    applyClip(
+      Number(startDraft ?? start),
+      Number(durationDraft ?? duration),
+      nextWorkflow === "character_swap" ? model : "seedance-2.5",
+    );
+  }
   function generate() {
     if (view === "library") {
       fresh();
@@ -335,7 +427,8 @@ export function Studio({
       busy ||
       mediaBusy ||
       stopping ||
-      enhancingPrompt
+      enhancingPrompt ||
+      (!!selectedId && !active)
     )
       return;
     if (!connected) {
@@ -343,6 +436,7 @@ export function Studio({
       return;
     }
     if (active?.status === "awaiting_approval") {
+      if (!reviewMedia(active)) return;
       approve.mutate(active.id);
       return;
     }
@@ -351,20 +445,27 @@ export function Studio({
       return;
     }
     void form.handleSubmit((values) => {
-      if (!source || !character) return;
+      if (!source) return;
       const input = createJobSchema.safeParse({
         sourceId: source.id,
-        characterId: character.id,
+        ...draftSettings,
         ...values,
-        start: startDraft === null ? start : Number(startDraft),
-        duration: durationDraft === null ? duration : Number(durationDraft),
+        ...applyClip(),
         resolution,
-        model,
-        prepareImage,
         preserveAudio,
-        target,
+        target:
+          workflow === "restyle" || workflow === "motion_transfer"
+            ? target.trim() || "person"
+            : target,
+        operation,
+        stylePreset,
       });
       if (!input.success) {
+        const promptIssue = input.error.issues.find(
+          (issue) => issue.path[0] === "prompt",
+        );
+        if (promptIssue)
+          form.setError("prompt", { message: promptIssue.message });
         toast.error(input.error.issues[0].message);
         return;
       }
@@ -374,7 +475,19 @@ export function Studio({
   const stopping =
     cancel.isPending ||
     (!!active && cancellingId === active.id && !terminal(active.status));
-  const inputCount = Number(!!currentSource) + Number(!!currentCharacter);
+  const inputCount =
+    Number(!!currentSource) +
+    (swap ? Number(!!currentCharacter) : currentReferences.length);
+  const inputIssue = workflowInputIssue({
+    workflow: currentWorkflow,
+    source: currentSource,
+    character: currentCharacter,
+    references: currentReferences,
+    prompt: active?.prompt ?? prompt,
+    stylePreset: currentStylePreset,
+  });
+  const inputsReady = !inputIssue;
+  const uploadSessionKey = `${mode}:${selectedId ?? `draft-${draftSession}`}:${currentWorkflow}`;
   const waiting = capabilities.isPending;
   const pending = create.isPending || approve.isPending;
   const inputsDisabled = !!selectedId || pending || sample.isPending;
@@ -423,7 +536,9 @@ export function Studio({
         stopping ||
         pending ||
         busy ||
-        (connected && !active && inputCount < 2);
+        (!!selectedId && !active) ||
+        (active?.status === "awaiting_approval" && !reviewMedia(active)) ||
+        (connected && !active && !inputsReady);
   const guidance = sample.isPending
     ? "Loading the example references…"
     : enhancingPrompt
@@ -434,13 +549,7 @@ export function Studio({
           ? null
           : !connected
             ? "Connect the remaining services to create."
-            : inputCount === 0
-              ? "Add a video and character image to begin."
-              : inputCount === 1
-                ? currentSource
-                  ? "Add a character image to continue."
-                  : "Add a source performance to continue."
-                : null;
+            : inputIssue;
   const primary =
     active?.result && view === "studio" ? (
       <Button className="primary-action" asChild>
@@ -523,10 +632,10 @@ export function Studio({
           <span />
         </button>
         <nav aria-label="Workspace">
-          <Hint label="Character studio">
+          <Hint label="Video studio">
             <button
               className={cn("rail-item", view === "studio" && "active")}
-              aria-label="Character studio"
+              aria-label="Video studio"
               onClick={() => setView("studio")}
             >
               <ScanFace size={21} />
@@ -579,7 +688,7 @@ export function Studio({
             </button>
             <span className="breadcrumb-divider">/</span>
             <span className="current-page">
-              {view === "library" ? "Your takes" : "Character studio"}
+              {view === "library" ? "Your takes" : "Video studio"}
             </span>
           </div>
           <div className="topbar-actions">
@@ -614,7 +723,11 @@ export function Studio({
               setMobilePanel("inputs");
             }}
           >
-            Inputs<span>{inputCount}/2</span>
+            Inputs
+            <span>
+              {inputCount}
+              {swap ? "/2" : ""}
+            </span>
           </button>
           <button
             aria-pressed={view === "studio" && mobilePanel === "preview"}
@@ -653,21 +766,31 @@ export function Studio({
               <span className="model-pill">{modelProfile.label}</span>
             </div>
             <div className="controls-scroll">
+              <WorkflowControls
+                workflow={currentWorkflow}
+                operation={currentOperation}
+                stylePreset={currentStylePreset}
+                disabled={inputsDisabled}
+                onWorkflow={changeWorkflow}
+                onOperation={setOperation}
+                onStylePreset={setStylePreset}
+              />
               <div className="field-heading">
                 <label>Your references</label>
-                <span className={cn(inputCount === 2 && "references-ready")}>
-                  {inputCount === 2 ? (
+                <span className={cn(inputsReady && "references-ready")}>
+                  {inputsReady ? (
                     <>
                       <Check size={12} />
                       Ready
                     </>
                   ) : (
-                    inputCount + "/2 added"
+                    inputCount + (swap ? "/2 added" : " added")
                   )}
                 </span>
               </div>
-              <div className="reference-grid">
+              <div className={cn("reference-grid", !swap && "source-only")}>
                 <UploadTile
+                  key={"video:" + uploadSessionKey}
                   kind="video"
                   onBusyChange={(busy) =>
                     setUploading((current) => ({ ...current, video: busy }))
@@ -681,24 +804,77 @@ export function Studio({
                     setDuration(
                       clampClipDuration(
                         Math.floor((value?.duration ?? 6) * 10) / 10,
-                        model,
+                        currentModel,
                       ),
                     );
                   }}
                   disabled={inputsDisabled}
                   apiClient={apiClient}
                 />
-                <UploadTile
-                  kind="character"
-                  onBusyChange={(busy) =>
-                    setUploading((current) => ({ ...current, character: busy }))
-                  }
-                  value={currentCharacter}
-                  onChange={setCharacter}
+                {swap && (
+                  <UploadTile
+                    key={"character:" + uploadSessionKey}
+                    kind="character"
+                    onBusyChange={(busy) =>
+                      setUploading((current) => ({
+                        ...current,
+                        character: busy,
+                      }))
+                    }
+                    value={currentCharacter}
+                    onChange={setCharacter}
+                    disabled={inputsDisabled}
+                    apiClient={apiClient}
+                  />
+                )}
+              </div>
+              {!swap && (
+                <ReferenceTray
+                  key={uploadSessionKey}
+                  workflow={currentWorkflow}
+                  references={currentReferences}
                   disabled={inputsDisabled}
                   apiClient={apiClient}
+                  onBusyChange={(busy) =>
+                    setUploading((current) => ({
+                      ...current,
+                      references: busy,
+                    }))
+                  }
+                  onAdd={(media, role) =>
+                    setReferences((current) =>
+                      current.length >= 30 ||
+                      current.some(
+                        (reference) => reference.media.id === media.id,
+                      )
+                        ? current
+                        : [
+                            ...current,
+                            { id: crypto.randomUUID(), role, media },
+                          ],
+                    )
+                  }
+                  onRemove={(id) =>
+                    setReferences((current) =>
+                      current.filter((reference) => reference.id !== id),
+                    )
+                  }
+                  onRole={(id, role) =>
+                    setReferences((current) =>
+                      current.map((reference) =>
+                        reference.id === id
+                          ? { ...reference, role }
+                          : reference,
+                      ),
+                    )
+                  }
+                  onMove={(id, offset) =>
+                    setReferences((current) =>
+                      moveReference(current, id, offset),
+                    )
+                  }
                 />
-              </div>
+              )}
               {currentSource && (
                 <div className="clip-selector">
                   <div className="field-heading">
@@ -736,29 +912,14 @@ export function Studio({
                             setDuration(
                               clampClipDuration(
                                 duration,
-                                model,
+                                currentModel,
                                 (currentSource.duration ?? 4) - value,
                               ),
                             );
                           }
                         }}
                         onBlur={() => {
-                          const value = Math.max(
-                            0,
-                            Math.min(
-                              Number(startDraft ?? start),
-                              (currentSource.duration ?? 4) - 4,
-                            ),
-                          );
-                          setStart(value);
-                          setDuration(
-                            clampClipDuration(
-                              duration,
-                              model,
-                              (currentSource.duration ?? 4) - value,
-                            ),
-                          );
-                          setStartDraft(null);
+                          applyClip();
                         }}
                       />
                       <span>s</span>
@@ -786,7 +947,7 @@ export function Studio({
                             text !== "" &&
                             Number.isFinite(value) &&
                             value >= 4 &&
-                            (model !== "seedance-2" ||
+                            (currentModel !== "seedance-2" ||
                               Number.isInteger(value)) &&
                             value <=
                               Math.min(
@@ -797,14 +958,7 @@ export function Studio({
                             setDuration(value);
                         }}
                         onBlur={() => {
-                          setDuration(
-                            clampClipDuration(
-                              Number(durationDraft ?? duration),
-                              model,
-                              (currentSource.duration ?? 4) - start,
-                            ),
-                          );
-                          setDurationDraft(null);
+                          applyClip();
                         }}
                       />
                       <span>s</span>
@@ -823,7 +977,7 @@ export function Studio({
                       setDuration(
                         clampClipDuration(
                           values[0],
-                          model,
+                          currentModel,
                           Math.max(4, (currentSource.duration ?? 4) - start),
                         ),
                       )
@@ -836,7 +990,11 @@ export function Studio({
                 </div>
               )}
               <div className="field-heading direction-heading">
-                <label htmlFor="prompt">Your direction</label>
+                <label htmlFor="prompt">
+                  {currentWorkflow === "restyle"
+                    ? "Custom direction"
+                    : "Your direction"}
+                </label>
                 <span>
                   <WandSparkles size={12} />
                   Describe the change
@@ -849,7 +1007,7 @@ export function Studio({
                   {...form.register("prompt")}
                   value={active?.prompt ?? prompt}
                   disabled={inputsDisabled}
-                  placeholder="Describe the character. Tell us what changes and what stays."
+                  placeholder={workflows[currentWorkflow].placeholder}
                   maxLength={3000}
                 />
                 <div>
@@ -859,7 +1017,11 @@ export function Studio({
                     title="Reset prompt"
                     type="button"
                     disabled={inputsDisabled}
-                    onClick={() => form.setValue("prompt", defaultPrompt)}
+                    onClick={() =>
+                      form.setValue("prompt", swap ? defaultPrompt : "", {
+                        shouldValidate: true,
+                      })
+                    }
                   >
                     <RotateCcw size={13} />
                   </button>
@@ -869,8 +1031,12 @@ export function Studio({
                 key={`${mode}:${selectedId ?? `draft-${draftSession}`}`}
                 prompt={active?.prompt ?? prompt}
                 model={currentModel}
+                workflow={currentWorkflow}
+                operation={currentOperation}
+                stylePreset={currentStylePreset}
+                references={swap ? [] : currentReferences}
                 target={options?.target ?? target}
-                prepareImage={options?.prepareImage ?? prepareImage}
+                prepareImage={currentPrepareImage}
                 preserveAudio={currentPreserveAudio}
                 disabled={inputsDisabled || mediaBusy}
                 available={capabilities.data?.promptEnhancement ?? false}
@@ -920,35 +1086,44 @@ export function Studio({
                   </button>
                 </div>
               )}
-              <div className="subject-control">
-                <div className="subject-field">
-                  <label htmlFor="target">Subject to replace</label>
-                  <Input
-                    id="target"
-                    aria-label="Subject to replace"
-                    aria-describedby="target-guidance"
-                    value={options?.target ?? target}
-                    onChange={(e) => setTarget(e.target.value)}
-                    disabled={inputsDisabled}
-                    placeholder="e.g. person in a black jacket"
-                    maxLength={160}
-                  />
+              {(swap || currentWorkflow === "element_edit") && (
+                <div className="subject-control">
+                  <div className="subject-field">
+                    <label htmlFor="target">
+                      {swap ? "Subject to replace" : "Edit target"}
+                    </label>
+                    <Input
+                      id="target"
+                      aria-label={swap ? "Subject to replace" : "Edit target"}
+                      aria-describedby="target-guidance"
+                      value={options?.target ?? target}
+                      onChange={(e) => setTarget(e.target.value)}
+                      disabled={inputsDisabled}
+                      placeholder={
+                        swap
+                          ? "e.g. person in a black jacket"
+                          : "e.g. the jacket, sign, or background"
+                      }
+                      maxLength={160}
+                    />
+                  </div>
+                  <p id="target-guidance" className="subject-guidance">
+                    {swap
+                      ? "Match the source person: “person in a black jacket”. One short phrase; clothing works better than left/right."
+                      : "Name the element or location to edit. Describe what changes and what stays in your direction."}
+                  </p>
                 </div>
-                <p id="target-guidance" className="subject-guidance">
-                  Match the source person: “person in a black jacket”. One short
-                  phrase; clothing works better than left/right.
-                </p>
-              </div>
+              )}
               <div className="quality-row">
                 <Select
                   value={currentModel}
-                  disabled={inputsDisabled || mediaBusy}
+                  disabled={inputsDisabled || mediaBusy || !swap}
                   onValueChange={(value) => {
                     const nextModel = value as VideoModelId;
-                    const nextDuration = clampClipDuration(
-                      duration,
+                    const { duration: nextDuration } = applyClip(
+                      Number(startDraft ?? start),
+                      Number(durationDraft ?? duration),
                       nextModel,
-                      (source?.duration ?? 30) - start,
                     );
                     setModel(nextModel);
                     setDuration(nextDuration);
@@ -1012,7 +1187,9 @@ export function Studio({
               <p className="model-guidance" id="model-guidance">
                 {currentModel === "seedance-2"
                   ? "4–15s · whole-second clips · reference generation"
-                  : "4–30s · dedicated video editing"}
+                  : swap
+                    ? "4–30s · dedicated video editing"
+                    : "Seedance 2.5 required · original video, no subject mask"}
               </p>
               <fieldset
                 className="audio-setting"
@@ -1053,21 +1230,23 @@ export function Studio({
                     : "Seedance creates new dialogue and sound."}
                 </p>
               </fieldset>
-              <button
-                className="advanced-toggle"
-                aria-expanded={advanced}
-                onClick={() => setAdvanced(!advanced)}
-              >
-                <Settings2 size={13} />
-                Advanced settings
-                <span>
-                  <ChevronDown
-                    size={14}
-                    className={cn(advanced && "rotated")}
-                  />
-                </span>
-              </button>
-              {advanced && (
+              {swap && (
+                <button
+                  className="advanced-toggle"
+                  aria-expanded={advanced}
+                  onClick={() => setAdvanced(!advanced)}
+                >
+                  <Settings2 size={13} />
+                  Advanced settings
+                  <span>
+                    <ChevronDown
+                      size={14}
+                      className={cn(advanced && "rotated")}
+                    />
+                  </span>
+                </button>
+              )}
+              {swap && advanced && (
                 <div className="advanced-options">
                   <div className="toggle-setting">
                     <div>
@@ -1083,7 +1262,7 @@ export function Studio({
                     </div>
                     <Switch
                       aria-label="Prepare the scene look"
-                      checked={options?.prepareImage ?? prepareImage}
+                      checked={currentPrepareImage}
                       onCheckedChange={setPrepareImage}
                       disabled={inputsDisabled || !capabilities.data?.image}
                     />
@@ -1115,6 +1294,12 @@ export function Studio({
             </div>
           </section>
           <main className="studio-workspace" id="workspace">
+            {demo && (
+              <p className="review-disclaimer" role="note">
+                Sample workspace: processing is simulated and results are
+                prerecorded. Your direction does not change the sample video.
+              </p>
+            )}
             <div className="workspace-heading">
               <h2>{workspaceTitle}</h2>
               {active &&
@@ -1222,14 +1407,14 @@ export function Studio({
                       <div className="input-ready-note">
                         <span>
                           <Check size={15} />
-                          {inputCount === 2
+                          {inputsReady
                             ? "Your references are ready."
                             : "Your performance is ready."}
                         </span>
                         <p>
-                          {inputCount === 2
+                          {inputsReady
                             ? "Set the direction, then prepare your references for a quick review."
-                            : "Add a character image to complete your inputs."}
+                            : inputIssue}
                         </p>
                         <button
                           className="mobile-only-text"
@@ -1305,8 +1490,11 @@ export function Studio({
                   },
                   {
                     name: "Meta SAM 3.1",
-                    description: "Subject tracking · Meta Model API",
+                    description: swap
+                      ? "Subject tracking · Meta Model API"
+                      : "Character swaps only · not needed for this workflow",
                     ready: capabilities.data?.sam,
+                    optional: !swap,
                   },
                   {
                     name: "Virtual Portrait",
@@ -1350,7 +1538,11 @@ export function Studio({
                       <p>{item.description}</p>
                     </div>
                     <span className="connection-state">
-                      {item.ready ? "Configured" : "Needs setup"}
+                      {item.ready
+                        ? "Configured"
+                        : item.optional
+                          ? "Not needed"
+                          : "Needs setup"}
                     </span>
                   </div>
                 ))}
@@ -1361,7 +1553,7 @@ export function Studio({
       </Dialog>
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
         <DialogContent className="help-dialog">
-          <DialogTitle>New character. Same performance.</DialogTitle>
+          <DialogTitle>New take. Same source.</DialogTitle>
           <DialogDescription>
             Three moments from the original clip to your next take.
           </DialogDescription>
@@ -1371,7 +1563,10 @@ export function Studio({
               <div>
                 <strong>Bring your references</strong>
                 <p>
-                  Add a performance and character image. Choose 4–
+                  {swap
+                    ? "Add a performance and character image."
+                    : "Add a source video and any needed reference images."}{" "}
+                  Choose 4–
                   {modelProfile.maxDuration} seconds and describe what changes.
                 </p>
               </div>
@@ -1381,8 +1576,10 @@ export function Studio({
               <div>
                 <strong>Check the look</strong>
                 <p>
-                  Review the tracked subject and optional scene image. You
-                  approve the references before video generation.
+                  {swap
+                    ? "Review the tracked subject and optional scene image."
+                    : "Review the prepared original video and ordered images. No subject mask is used."}{" "}
+                  You approve the references before video generation.
                 </p>
               </div>
             </li>
@@ -1398,8 +1595,8 @@ export function Studio({
             </li>
           </ol>
           <p className="dialog-footnote">
-            A prepared scene image is optional. References guide the result;
-            review every take before sharing.
+            {swap ? "A prepared scene image is optional. " : ""}References guide
+            the result; review every take before sharing.
           </p>
         </DialogContent>
       </Dialog>

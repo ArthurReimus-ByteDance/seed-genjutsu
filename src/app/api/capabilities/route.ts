@@ -3,6 +3,7 @@ import { ok, route } from "@/server/http";
 import { env } from "@/env";
 import { DEFAULT_VIDEO_MODEL } from "@/lib/video-models";
 import { providerModelId } from "@/server/video-models";
+import { workflowIds, workflows } from "@/lib/workflows";
 export const dynamic = "force-dynamic";
 export const GET = (request: Request) =>
   route(async () => {
@@ -15,6 +16,16 @@ export const GET = (request: Request) =>
     const portraits = !!env.BYTEPLUS_ACCESS_KEY && !!env.BYTEPLUS_SECRET_KEY;
     const video = !!env.BYTEPLUS_API_KEY;
     return ok({
+      workflows: workflowIds.map((id) => ({
+        id,
+        label: workflows[id].label,
+        model: id === "character_swap" ? null : "seedance-2.5",
+        requiresSam: id === "character_swap",
+        maxImageReferences: id === "character_swap" ? 1 : 30,
+        configured:
+          video && storage && portraits && (id !== "character_swap" || sam),
+        qualityValidated: false,
+      })),
       video,
       image: !!env.SEEDREAM_MODEL && video,
       storage,

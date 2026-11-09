@@ -6,10 +6,10 @@ import "./globals.css";
 const geist = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 export const metadata: Metadata = {
-  title: `${APP_NAME} — A new character. Every move.`,
+  title: `${APP_NAME} | Video Transformation Studio`,
   applicationName: APP_NAME,
   description:
-    "A private creative studio for character replacement. Preserve the performance, direct the look, and create with Seedance and Seedream.",
+    "A private studio for character swaps, element editing, motion transfer, and video restyling with BytePlus.",
   robots: { index: false, follow: false },
 };
 export default function RootLayout({

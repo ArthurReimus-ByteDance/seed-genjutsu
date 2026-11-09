@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { AppError, ok, route } from "@/server/http";
+import { AppError, ok, route, readFormData } from "@/server/http";
 import { mediaRoot, saveMedia, publicUpload } from "@/server/storage";
 import {
   frame,
@@ -14,9 +14,7 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 export const POST = (request: Request) =>
   route(async () => {
-    if (Number(request.headers.get("content-length") ?? 0) > 105 * 1024 * 1024)
-      throw new AppError(413, "TOO_LARGE", "Videos must be under 100 MB.");
-    const form = await request.formData();
+    const form = await readFormData(request);
     const kind = z.enum(["video", "character"]).parse(form.get("kind"));
     const file = form.get("file");
     if (!(file instanceof File) || !file.size)

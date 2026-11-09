@@ -22,7 +22,7 @@ COPY --from=build --chown=node:node /app/public ./public
 COPY --from=build --chown=node:node /app/src ./src
 COPY --from=build --chown=node:node /app/scripts ./scripts
 COPY --from=build --chown=node:node /app/tsconfig.json ./tsconfig.json
-RUN mkdir -p /app/.data && chown node:node /app/.data
+RUN mkdir -p /app/.data /app/output && chown node:node /app/.data /app/output
 USER node
 EXPOSE 3107
 CMD ["node","server.js"]
