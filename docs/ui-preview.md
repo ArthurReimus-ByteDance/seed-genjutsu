@@ -35,6 +35,8 @@ Mock HTTP routes implement capabilities, samples, uploads, media ranges, jobs, a
 
 Uploads are actually decoded and probed. Selected clips are actually trimmed, normalized and given a first frame. The mock subject is the trimmed source; it is **not SAM segmentation**. The optional scene image and final output come from fixed fictional samples. Uploaded identity, subject motion, masking quality, scene consistency, audio restoration, provider review, model entitlement, real TOS and billable generation are not validated by this preview.
 
+Character Swap displays **simulated Refine and Verify stages** before masking and before reference review respectively. Their activity explicitly states that no DeepSeek inference, subject identification or mask-quality assessment occurs, and they do not create real refinement/verification reports. Edit Elements, Motion Transfer and Restyle skip both stages. The live source/red-mask comparison and decision rendering have automated markup tests; browser playback and measured mobile layout for these new elements remain unvalidated.
+
 The preview saves one local workspace under MEDIA_ROOT/demo/local. JSON writes use the same inter-process lock and atomic publication as the real studio. Every browser on this computer sees the same preview library. Takes survive page refresh and web-process restart without cookies. Per-workspace limits bound the sample catalog; automatic retention cleanup is deferred. Legacy per-session folders are preserved but are no longer read.
 
 ## Computer-use evidence

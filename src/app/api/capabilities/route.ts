@@ -31,6 +31,8 @@ export const GET = (request: Request) =>
       storage,
       portraits,
       sam,
+      samVerification: video && sam,
+      samVerifierModel: video && sam ? env.SAM_VERIFIER_MODEL : null,
       promptEnhancement: video,
       promptEnhancerModel: video ? env.PROMPT_ENHANCER_MODEL : null,
       seedanceModel: providerModelId(DEFAULT_VIDEO_MODEL),

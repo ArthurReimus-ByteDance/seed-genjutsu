@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { samRefinementSchema, samVerificationSchema } from "./sam-verification";
 import {
   DEFAULT_VIDEO_MODEL,
   LEGACY_VIDEO_MODEL,
@@ -23,6 +24,7 @@ export const uploadSchema = z.object({
     "masked",
     "result",
     "prepared",
+    "verification",
   ]),
   name: z.string(),
   mime: z.string(),
@@ -178,6 +180,9 @@ export const jobSchema = z.object({
   anchor: uploadSchema.nullable(),
   masked: uploadSchema.nullable(),
   result: uploadSchema.nullable(),
+  samRefinement: samRefinementSchema.nullable().optional(),
+  maskVerifications: z.array(samVerificationSchema).max(2).optional(),
+  maskComparison: uploadSchema.nullable().optional(),
   error: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -203,6 +208,8 @@ export const capabilitySchema = z.object({
   storage: z.boolean(),
   portraits: z.boolean(),
   sam: z.boolean(),
+  samVerification: z.boolean().optional(),
+  samVerifierModel: z.string().nullable().optional(),
   promptEnhancement: z.boolean(),
   promptEnhancerModel: z.string().nullable(),
   seedanceModel: z.string(),

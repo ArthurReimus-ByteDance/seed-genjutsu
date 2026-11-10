@@ -45,7 +45,7 @@ Setup preserves existing `.env`, `.env.local`, or development/production environ
 2. Select the clip range, model, resolution, and audio mode.
 3. Add the workflow's required references and direction: a replacement character for Swap, an operation/target for Edit Elements, cast/scene references for Motion Transfer, or rendering guidance for Restyle.
 4. For ordered images, choose roles and arrange them as Image 1, Image 2, and so on. Optionally enhance the direction, then edit the suggestion.
-5. Create the take. The worker prepares the source; only Character Swap performs subject masking and optional scene-image generation.
+5. Create the take. The worker prepares the source; only Character Swap performs mandatory AI subject-prompt refinement, SAM masking, AI video mask verification, and optional scene-image generation.
 6. Review the actual prepared media and settings. Approve to register the video and generate, or cancel the take.
 7. Watch progress, play or download the result, and reuse saved inputs/settings for another take.
 
@@ -88,7 +88,9 @@ The diagrams show successful takes with review enabled. Cancellation stops the t
 
 ### Character-swap generation flow
 
-Choose a clear replacement image and a **Subject to replace** phrase describing visible source attributes, such as `person in a black jacket`. SAM receives that phrase, not the creative direction. The masked performance guides motion and camera; the character image guides appearance and body proportions. The silhouette remains a competing visual cue, so generated proportions can vary.
+Choose a clear replacement image and a **Subject to replace** phrase describing visible source attributes, such as `person in a black jacket`. Before SAM, DeepSeek V4.1 Flash inspects the prepared source video and this description, then returns a concise, visible-attribute SAM phrase for the same intended subject. Ambiguous or missing subjects stop before masking. Your original description remains unchanged; the refinement is saved separately. Neither the replacement image nor the creative direction is used to refine the SAM phrase. The masked performance guides motion and camera; the character image guides appearance and body proportions. The silhouette remains a competing visual cue, so generated proportions can vary.
+
+After masking, the same pinned DeepSeek V4.1 Flash model checks a synchronized source/red-overlay comparison video against the original user intent. It can request one clearer source-subject phrase and one corrective SAM attempt, without repeating the initial refinement. Uncertain masks, unavailable verification, and exhausted retries stop before downstream paid stages. **Refine**, **Verify**, **Mask Check** and the activity log expose the stages and decisions. A successful first mask uses one refinement call and one review call; a corrected take adds one SAM call and one review call. These sampled video checks are not frame-by-frame tracking or real-person authorization, and their live accuracy remains unvalidated.
 
 Optionally enable scene preparation to use Seedream 5.0 Pro: Image 1 is the character, and the extracted source frame guides the generated scene that becomes Image 2. This is an additional paid stage, not a requirement for swapping. See [SAM integration and recovery](docs/meta-sam.md) for bounded inline video, mask parsing, and detailed subject-prompt guidance.
 
@@ -97,7 +99,10 @@ flowchart TD
     Clip("Selected source clip<br/>Seedance 2: 4–15 s · Seedance 2.5: 4–30 s")
     Character("Character reference image")
     Prep("Trim and normalize at 24 fps<br/>Extract the first frame")
+    Refine("DeepSeek V4.1 Flash<br/>Source video + original subject description")
     Mask("Meta SAM 3.1 + FFmpeg<br/>Render a silent masked video")
+    Verify("DeepSeek V4.1 Flash<br/>Verify synchronized source + red mask overlay video")
+    Stop("Needs attention<br/>Review comparison and edit the subject phrase")
     Scene("Seedream 5.0 Pro<br/>Optional scene image")
     Review("Review prepared references<br/>Manual approval by default")
     Portrait("Register the masked video in Virtual Portrait<br/>Wait for the asset to become Active")
@@ -106,7 +111,15 @@ flowchart TD
     Audio("Restore source audio if selected<br/>Otherwise keep generated audio")
     Result("Save the MP4 to private TOS and local cache<br/>Preview or download")
 
-    Clip --> Prep --> Mask --> Review --> Portrait
+    Clip --> Prep --> Refine
+    Refine -->|Clear subject and short SAM phrase| Mask
+    Refine -->|Ambiguous, missing or unavailable| Stop
+    Mask --> Verify
+    Verify -->|Pass · scene preparation off| Review
+    Verify -->|Pass · scene preparation enabled| Scene
+    Verify -->|One clear description correction| Mask
+    Verify -->|Uncertain or correction exhausted| Stop
+    Review --> Portrait
     Prep -.->|First frame| Scene
     Character -.-> Scene
     Scene -.-> Review
@@ -117,7 +130,7 @@ flowchart TD
 
     classDef step fill:#181818,stroke:#52525b,color:#fafafa
     classDef generation fill:#18325c,stroke:#60a5fa,color:#f8fafc
-    class Clip,Character,Prep,Mask,Scene,Review,Portrait,Poll,Audio,Result step
+    class Clip,Character,Prep,Refine,Mask,Verify,Stop,Scene,Review,Portrait,Poll,Audio,Result step
     class Seedance generation
 ```
 
@@ -248,11 +261,11 @@ flowchart TB
     Worker <-->|Read and store media| TOS
     Worker <-->|Character Swap only: inline clip and streamed masks| SAM
     Worker <-->|Signed prepared or masked video URL and asset ID| Portrait
-    Worker <-->|Seedance tasks; optional swap-only Seedream| Ark
+    Worker <-->|Seedance tasks; swap-only subject refinement, mask verification and optional Seedream| Ark
     Web -.->|Optional prompt enhancement| Ark
 ```
 
-`BYTEPLUS_API_KEY` authenticates ModelArk generation and enhancement. The separate IAM AK/SK pair, with a session token when using STS, signs TOS and Virtual Portrait operations. `META_API_KEY` is needed only for the Character Swap masking path. Keys remain in server/worker environments; browsers receive local media IDs and expiring signed media URLs, not provider credentials. See [provider configuration](#provider-configuration).
+`BYTEPLUS_API_KEY` authenticates ModelArk generation, Character Swap subject refinement and mask verification, and enhancement. The separate IAM AK/SK pair, with a session token when using STS, signs TOS and Virtual Portrait operations. `META_API_KEY` is needed only for the Character Swap masking path. Keys remain in server/worker environments; browsers receive local media IDs and expiring signed media URLs, not provider credentials. See [provider configuration](#provider-configuration).
 
 ### Data sequence
 
@@ -288,11 +301,21 @@ sequenceDiagram
     Worker->>Worker: Trim and normalize to 24 fps<br/>Extract first frame
     Worker->>TOS: Store prepared clip and frame
     alt Character Swap
-        Worker->>SAM: Send inline silent clip and subject phrase
+        Worker->>State: Save subject-refinement submission marker
+        Worker->>Models: DeepSeek source video + original subject + strict JSON Schema
+        Models-->>Worker: Concise SAM phrase or needs review
+        Worker->>State: Checkpoint refinement and atomic next stage
+        Note over Worker,Models: Ambiguous subjects or failed refinement stop before SAM.
+        Worker->>SAM: Send inline silent clip and refined subject phrase
         SAM-->>Worker: Stream mask events
         Worker->>State: Checkpoint completed masks
         Worker->>Worker: Render silent masked video
-        Worker->>TOS: Store masked video
+        Worker->>TOS: Store masked and synchronized comparison videos
+        Worker->>State: Save verifier attempt marker
+        Worker->>Models: DeepSeek V4.1 Flash video_url + strict JSON Schema
+        Models-->>Worker: Pass, correction, or needs review
+        Worker->>State: Checkpoint decision and atomic next stage
+        Note over Worker,SAM: One clear correction may repeat SAM + verification, not initial refinement.<br/>Original user intent stays authoritative.
         opt Prepare scene image for swap
             Worker->>Models: Seedream request with signed frame and character URLs
             Models-->>Worker: Scene image
@@ -474,12 +497,13 @@ Requests and saved records without `workflow` mean `character_swap`. Legacy requ
 
 Web and worker must resolve MEDIA_ROOT to the same directory. Production startup resolves a relative value from the project folder before standalone changes its working directory; start the worker from that project folder too. Setup writes an absolute path explicitly; Compose uses /app/.data.
 
-| Location                  | Contents                                                                                  |
-| ------------------------- | ----------------------------------------------------------------------------------------- |
-| MEDIA_ROOT/workspace.json | Media index, takes, events, provider IDs, submission markers, worker leases and heartbeat |
-| MEDIA_ROOT/UUID           | Uploaded and prepared media; a local cache when TOS is enabled                            |
-| MEDIA_ROOT/sam/UUID.json  | Completed Meta mask checkpoints, used to recover rendering without another API request    |
-| MEDIA_ROOT/demo/local/    | Separate, opt-in mock workspace and its illustrative outputs                              |
+| Location                         | Contents                                                                                      |
+| -------------------------------- | --------------------------------------------------------------------------------------------- |
+| MEDIA_ROOT/workspace.json        | Media index, takes, events, provider IDs, submission markers, worker leases and heartbeat     |
+| MEDIA_ROOT/UUID                  | Uploaded and prepared media; a local cache when TOS is enabled                                |
+| MEDIA_ROOT/sam/UUID.json         | Subject-refinement marker/report and initial Meta masks; recovery without duplicate inference |
+| MEDIA_ROOT/sam/UUID.retry-1.json | Corrective SAM attempt, comparison media IDs and checkpointed AI decisions                    |
+| MEDIA_ROOT/demo/local/           | Separate, opt-in mock workspace and its illustrative outputs                                  |
 
 Reads and writes use an inter-process file lock. Updates validate the document, sync a temporary file and atomically rename it. Corrupt state is reported; it is never silently reset. Provider submission markers are saved before external mutations. Accepted asset/task/result IDs and their next stages are committed together. Older interrupted records that already contain an ID resume review, polling, or completion without submitting again. Responses interrupted before any ID was saved remain ambiguous and stop for manual inspection. Cancellation retains any accepted provider ID.
 
@@ -495,13 +519,14 @@ JSON bodies are limited to 32,000 counted bytes. Multipart uploads are limited t
 
 Configure services according to the selected workflow; Meta and Seedream are not prerequisites for the entire studio.
 
-| Service                                     | Character Swap              | Edit Elements          | Motion Transfer        | Restyle                |
-| ------------------------------------------- | --------------------------- | ---------------------- | ---------------------- | ---------------------- |
-| Seedance / ModelArk key                     | Required, Seedance 2 or 2.5 | Required, Seedance 2.5 | Required, Seedance 2.5 | Required, Seedance 2.5 |
-| Private TOS and Virtual Portrait IAM access | Required                    | Required               | Required               | Required               |
-| Meta SAM key                                | Required                    | Not used               | Not used               | Not used               |
-| Seedream model                              | Optional scene preparation  | Not used               | Not used               | Not used               |
-| DeepSeek prompt enhancer                    | Optional                    | Optional               | Optional               | Optional               |
+| Service                                      | Character Swap                | Edit Elements          | Motion Transfer        | Restyle                |
+| -------------------------------------------- | ----------------------------- | ---------------------- | ---------------------- | ---------------------- |
+| Seedance / ModelArk key                      | Required, Seedance 2 or 2.5   | Required, Seedance 2.5 | Required, Seedance 2.5 | Required, Seedance 2.5 |
+| Private TOS and Virtual Portrait IAM access  | Required                      | Required               | Required               | Required               |
+| Meta SAM key                                 | Required                      | Not used               | Not used               | Not used               |
+| DeepSeek video subject refinement and review | Required before and after SAM | Not used               | Not used               | Not used               |
+| Seedream model                               | Optional scene preparation    | Not used               | Not used               | Not used               |
+| DeepSeek prompt enhancer                     | Optional                      | Optional               | Optional               | Optional               |
 
 | Variable                                     | Purpose                                                                            |
 | -------------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -510,6 +535,8 @@ Configure services according to the selected workflow; Meta and Seedream are not
 | `SEEDANCE_2_MODEL`                           | Seedance 2 binding; defaults to `dreamina-seedance-2-0-260128`                     |
 | `SEEDANCE_2_5_MODEL`                         | Seedance 2.5 binding; defaults to `dreamina-seedance-2-5-260628`                   |
 | `META_API_KEY`                               | Character Swap only: Meta Model API key with SAM 3.1 access; model `sam-3.1`       |
+| `SAM_VERIFIER_MODEL`                         | Shared pre/post-SAM model; defaults to `deepseek-v4-1-flash-261017`                |
+| `SAM_VERIFIER_FPS`                           | Both video steps' sampling frequency, default `2`, permitted range `0.2`-`5`       |
 | `BYTEPLUS_ACCESS_KEY`, `BYTEPLUS_SECRET_KEY` | Shared BytePlus IAM credentials for TOS and Virtual Portrait OpenAPI               |
 | `BYTEPLUS_SESSION_TOKEN`                     | Optional STS token shared by TOS and Virtual Portrait                              |
 | `BYTEPLUS_PROJECT`                           | Defaults to `default`                                                              |
@@ -606,6 +633,7 @@ The current scope is explicitly local and single-user. [Future auth and database
 - `src/server/storage.ts`: local media and native private TOS storage.
 - `src/server/providers.ts`: BytePlus provider contracts and signing.
 - `src/server/meta-sam.ts` and `sam-render.ts`: Character Swap-only tracking, checkpoints, and mask rendering.
+- `src/lib/sam-verification.ts` and `src/server/sam-review.ts`: validated source refinement and mask decisions, native DeepSeek video requests and bounded correction policy.
 - `src/app/api/`: local HTTP handlers with request-origin/Host checks.
 - `scripts/worker.ts`: shared preparation, workflow routing, registration, polling, and audio finishing.
 
@@ -616,6 +644,7 @@ The current scope is explicitly local and single-user. [Future auth and database
 - [shadcn Select](https://ui.shadcn.com/docs/components/select): accessible model picker.
 - [Virtual Portrait](https://docs.byteplus.com/en/docs/modelark/private-virtual-avatar-library-guide-preview).
 - [BytePlus image API](https://docs.byteplus.com/en/docs/modelark/image-generation-api).
+- [BytePlus native video understanding](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/video-understanding#8e3a48ed) and [structured output](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/structured-output-beta).
 - Seedream 5.0 Pro model: `dola-seedream-5-0-pro-260628` (user-selected configuration).
 - [Meta SAM 3.1](https://dev.meta.ai/models/sam-3-1), [segmentation API](https://dev.meta.ai/docs/sam/segmenting) and [official parser](https://dev.meta.ai/docs/sam/client-libraries).
 - [TOS Node SDK](https://docs.byteplus.com/api/docs/tos/Install-the-node-js-sdk).

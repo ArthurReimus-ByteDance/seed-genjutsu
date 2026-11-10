@@ -1,5 +1,35 @@
 # Validation snapshot
 
+## Showcase comparison with pre/post-SAM review - 2026-11-10
+
+**Five fresh 720p Seedance 2.5 transformations succeeded using the exact archived showcase sources, prepared bytes, character reference and configuration.** A sixth, masking-only take reused the original failed dance description and stopped at approval without a Seedance submission. The original Lark showcase and accepted historical tasks were preserved.
+
+**Cinema mask coverage improved from 162/192 to 192/192 frames**, recovering the opening 1.25 seconds of the intended cropped performer. The already-corrected dance mask remained at 192/192 frames, with mean baseline/current mask intersection-over-union 0.9970. The original failed dance phrase became a visible clothing description and passed SAM plus native-video review on the first attempt. Three SAM and six DeepSeek requests were observed; no corrective retry was needed. These samples establish exact hosted video-request acceptance and bounded subject-selection improvement, not false-pass or general tracking accuracy.
+
+**Final-video quality was not uniformly better.** The new cinema output preserves the shoulder-touch gesture less clearly than the baseline. Dance outfit details remain imperfect. The three workflows that skip SAM completed without regression in duration or audio; visual differences cannot be attributed to the verifier. Delivered durations were unchanged: 7.708333 seconds for both swaps, 29.708333 for edit/restyle and 30.041667 for motion transfer. All outputs fully decode, and source-audio correlation exceeded 0.998.
+
+**Live browser testing caught and fixed mobile stepper overflow.** The six stages now use a two-column grid at the existing mobile breakpoint. Content width changed from 422 to 390px at a 390px viewport, and from 362 to 320px at 320px. Original/refined descriptions, passed verification and Mask Check were confirmed after the production rebuild. All 163 tests, lint, typechecking, build and 96 provider-free worker/API checks passed.
+
+Final isolated Chrome checks passed playback, midpoint seek and end events for **23 cached-media paths** after the live services stopped. Earlier private-TOS playback included a 15-second seek timeout on the approximately 45 MB original Restyle source without a media error; remote large-source seek latency remains unqualified. Six DeepSeek calls reported 42,550 input and 148 output tokens, with combined pre/post request time of 4.854-6.107 seconds per subject case, excluding rendering and storage. Human review and runtime restarts prevent a clean whole-job latency comparison; settled billing was not queried.
+
+Temporary STS remained in memory and permanent configuration was unchanged. Exactly five new Seedance submissions were observed, with accepted IDs preserved across recovery. Owned services and scratch helpers were cleaned up; durable private evidence remains under `output/sam-verifier-e2e-2026-11-10/`, including `REPORT.md`, `run.json`, `mask-qa.json`, `media-qa.json`, `browser-qa.json` and sanitized provider events. Application changes remain uncommitted. Crowded/negative cases, occlusion, corrective-retry accuracy, scored identity/pose fidelity and native Lark playback remain follow-up work; public media rights remain uncleared.
+
+## Pre/post-SAM DeepSeek pipeline - 2026-11-10
+
+**New Character Swap takes now refine the source-subject phrase before SAM and verify the mask afterward, using the same pinned `deepseek-v4-1-flash-261017` video model.** Source refinement sees the prepared video and original description, not the replacement image or creative direction. A clear subject advances with a short visible-attribute phrase; ambiguity, missing credentials or invalid output stops before SAM. One post-mask correction may repeat SAM and mask review, never the initial refinement.
+
+The change passed **163 automated tests, ESLint, typechecking, the production build, 96 isolated local API/worker observations, and all four simulated preview workflows**. Checks cover exact pre/post request order, original-intent preservation, clip/model-bound refinement, cached and interrupted-result recovery, missing Meta/ModelArk keys, invalid source media, cancellation, expired leases, concurrency and approval blocking. Both AI stages remain simulations in preview. All eight Mermaid diagrams across README, SAM and workflow docs rendered using installed Mermaid CLI 11.16.0; visual layout inspection was not performed.
+
+**No paid SAM, DeepSeek or Seedance call was made for these implementation checks.** At that handoff, hosted video acceptance, refinement/review accuracy, comparison playback and mobile layout were unverified; the later showcase comparison above adds bounded live evidence. The original/post-mask-only evidence below predates source refinement. See [source refinement and recovery](meta-sam.md#ai-source-subject-refinement).
+
+## SAM AI video verifier - 2026-11-10
+
+**The Character Swap pipeline now requires native-video mask verification with BytePlus `deepseek-v4-1-flash-261017` before optional scene preparation, approval, Virtual Portrait or Seedance.** The verifier receives a synchronized source/red-mask comparison MP4 and validated mask statistics. It can request at most one corrective SAM attempt, with the original target and both attempt checkpoints preserved. Other workflows skip masking and verification.
+
+The implementation passed **152 automated tests, ESLint, typechecking, the production build, 97 isolated local API/worker checks, and all four simulated preview workflows**. Real local FFmpeg encoding validates comparison duration, dimensions, silent audio and the 50 MB bound. Regression cases cover empty/multiple masks, unsafe or incomplete model output, blocked approval, retry exhaustion, cancellation, expired leases, concurrent correction, and completed/interrupted verifier checkpoint recovery. These checks use synthetic masks and intercepted provider responses; no hosted SAM or ModelArk inference was submitted.
+
+**Live video-model access and reviewer accuracy were unvalidated at this checkpoint.** The later showcase comparison above establishes hosted request acceptance for its specific samples. Crowded subjects, occlusion, false passes, subject-preserving corrections and 30-second SAM render performance still need representative live testing. Video understanding samples frames and does not prove exhaustive tracking, identity, consent or usage rights. Earlier dated live runs below predate this mandatory verifier.
+
 ## Core workflows live validation - 2026-11-09
 
 **Edit Elements, Motion Transfer, and Restyle each completed one real four-second 480p Seedance 2.5 generation.** Exactly three distinct tasks were accepted with `dreamina-seedance-2-5-260628`, without retries, SAM masking, prompt enhancement, or optional Seedream preparation. Actual uploads, private TOS, FFmpeg original-video preparation, browser review and approval, Virtual Portrait registration and Active status, worker polling, local audio finishing, and delivered media were exercised.

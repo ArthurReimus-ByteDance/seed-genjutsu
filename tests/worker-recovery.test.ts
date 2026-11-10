@@ -8,6 +8,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJobSchema, type CreateJob } from "../src/lib/schemas";
+import {
+  maskLine,
+  segmentationEvents,
+  verificationFixture,
+} from "../scripts/fixtures/meta-sam";
+import { DEFAULT_SAM_VERIFIER_MODEL } from "../src/lib/sam-verification";
 
 const root = await mkdtemp(path.join(tmpdir(), "seed-recovery-"));
 const project = fileURLToPath(new URL("..", import.meta.url));
@@ -18,6 +24,7 @@ process.env.BYTEPLUS_ACCESS_KEY = "fixture-access";
 process.env.BYTEPLUS_SECRET_KEY = "fixture-secret";
 const { workspace } = await import("../src/server/workspace");
 const { createJob, updateJob, jobRecord } = await import("../src/server/jobs");
+const { samCheckpointStore } = await import("../src/server/meta-sam");
 after(() => rm(root, { recursive: true, force: true }));
 
 async function createFixture(
@@ -63,7 +70,12 @@ async function createFixture(
   );
 }
 
-async function runWorker(jobId: string, expected: string, preload: string) {
+async function runWorker(
+  jobId: string,
+  expected: string,
+  preload: string,
+  environment: Record<string, string> = {},
+) {
   const child = spawn(
     process.execPath,
     [
@@ -85,9 +97,10 @@ async function runWorker(jobId: string, expected: string, preload: string) {
         BYTEPLUS_SECRET_KEY: "fixture-secret",
         BYTEPLUS_API_KEY: "fixture-model-key",
         BYTEPLUS_SESSION_TOKEN: "",
-        META_API_KEY: "",
+        META_API_KEY: "fixture-meta-key",
         WORKER_POLL_MS: "500",
         TSX_TSCONFIG_PATH: path.join(project, "tsconfig.json"),
+        ...environment,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -148,6 +161,385 @@ const mockStorage = `
     }
   });
 `;
+
+async function createPreparedSwapFixture() {
+  const job = await createFixture();
+  const preparedId = randomUUID();
+  const { stdout } = await promisify(execFile)(
+    "ffmpeg",
+    [
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=blue:s=640x360:r=24:d=4",
+      "-c:v",
+      "libx264",
+      "-f",
+      "mp4",
+      "-movflags",
+      "frag_keyframe+empty_moov",
+      "pipe:1",
+    ],
+    { encoding: "buffer", maxBuffer: 20 * 1024 * 1024 },
+  );
+  await writeFile(path.join(root, preparedId), stdout);
+  await workspace.update((state) => {
+    state.media[preparedId] = {
+      ...state.media[job.source.id],
+      id: preparedId,
+      kind: "prepared",
+      width: 640,
+      height: 360,
+      bytes: stdout.length,
+    };
+  });
+  await updateJob(job.id, {
+    status: "processing",
+    stage: "prompt_refinement",
+    prepared_id: preparedId,
+  });
+  return job;
+}
+
+async function createMaskFixture(output = maskLine(0, 640, 360)) {
+  const job = await createPreparedSwapFixture();
+  await updateJob(job.id, {
+    stage: "masking",
+    sam_refinement_required: false,
+  });
+  await samCheckpointStore(job.id, root).update((state) => {
+    state.response = { responseId: "original-meta-response", output };
+  });
+  return job;
+}
+
+test("source-video refinement precedes SAM and one corrective review preserves original intent", async () => {
+  const job = await createPreparedSwapFixture();
+  const requests = await runWorker(
+    job.id,
+    "review",
+    mockStorage +
+      `
+    let masks = 0;
+    globalThis.fetch = async (url, options) => {
+      const body = JSON.parse(options.body);
+      const schema = body.response_format?.json_schema?.name;
+      console.log(JSON.stringify({url:String(url), schema, model:body.model,
+        target:body.input?.[0]?.content?.[0]?.text,
+        context:schema ? JSON.parse(body.messages[1].content[0].text) : null}));
+      if (schema === "sam_subject_refinement")
+        return Response.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify({
+          decision:"ready",reason:"identified",description:"person wearing black"
+        })}}]});
+      if (String(url).includes("api.meta.ai")) {
+        masks++;
+        return new Response(masks === 1 ? ${JSON.stringify(segmentationEvents(""))}
+          : ${JSON.stringify(segmentationEvents(maskLine(0, 640, 360)))},
+          {headers:{"content-type":"text/event-stream"}});
+      }
+      return Response.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify(masks === 1
+        ? {decision:"retry",reason:"empty_mask",subjectIdentified:true,description:"person in a black sleeveless shirt"}
+        : {decision:"pass",reason:"matched",subjectIdentified:true,description:null})}}]});
+    };
+  `,
+  );
+  assert.deepEqual(
+    requests.map((request) => request.schema ?? "sam"),
+    [
+      "sam_subject_refinement",
+      "sam",
+      "sam_mask_verification",
+      "sam",
+      "sam_mask_verification",
+    ],
+  );
+  assert.equal(requests[1].target, "person wearing black");
+  assert.equal(requests[3].target, "person in a black sleeveless shirt");
+  for (const request of requests.filter((request) => request.schema)) {
+    assert.equal(request.model, DEFAULT_SAM_VERIFIER_MODEL);
+    assert.equal(request.context.originalTarget, "person");
+  }
+  const saved = await jobRecord(job.id);
+  assert.equal(saved.config.target, "person");
+  assert.equal(saved.sam_refinement?.description, "person wearing black");
+  assert.equal(saved.sam_refinement?.preparedId, saved.prepared_id);
+  assert.equal(saved.sam_target, "person in a black sleeveless shirt");
+  assert.equal(saved.sam_attempt, 1);
+  assert.equal(saved.sam_verifications?.length, 2);
+  assert.equal(saved.asset_id, null);
+  assert.equal(saved.provider_task_id, null);
+});
+
+test("ambiguous unavailable or invalid refinement stops before SAM without hidden retries", async () => {
+  for (const failure of ["ambiguous", "invalid", "provider"] as const) {
+    const job = await createPreparedSwapFixture();
+    const requests = await runWorker(
+      job.id,
+      "needs_attention",
+      mockStorage +
+        `
+      globalThis.fetch = async (url) => {
+        console.log(JSON.stringify({url:String(url)}));
+        if (${JSON.stringify(failure)} === "provider") throw Error("private upstream details");
+        return Response.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify(
+          ${JSON.stringify(failure)} === "ambiguous"
+          ? {decision:"needs_review",reason:"ambiguous_subject",description:null}
+          : {decision:"ready",reason:"identified",description:"https://private.example"}
+        )}}]});
+      };
+    `,
+    );
+    assert.equal(requests.length, 1);
+    assert.ok(requests[0].url.endsWith("/chat/completions"));
+    const saved = await jobRecord(job.id);
+    assert.equal(saved.stage, "prompt_refinement");
+    assert.equal(saved.config.target, "person");
+    assert.equal(saved.sam_target, undefined);
+    assert.equal(saved.meta_response_id, null);
+    assert.equal(saved.masked_id, null);
+    assert.equal(saved.asset_id, null);
+    assert.ok(!saved.error?.includes("private upstream details"));
+  }
+});
+
+test("completed source refinement recovers without re-refining and interrupted requests do not repeat", async () => {
+  for (const completed of [true, false]) {
+    const job = await createPreparedSwapFixture();
+    const preparedId = (await jobRecord(job.id)).prepared_id!;
+    await samCheckpointStore(job.id, root).update((state) => {
+      state.refinementStartedAt = new Date().toISOString();
+      if (completed)
+        state.refinement = {
+          decision: "ready",
+          reason: "identified",
+          description: "person wearing black",
+          model: DEFAULT_SAM_VERIFIER_MODEL,
+          originalTarget: "person",
+          preparedId,
+          inputTokens: null,
+          outputTokens: null,
+          refinedAt: new Date().toISOString(),
+        };
+    });
+    await updateJob(job.id, {
+      submission_started_at: new Date().toISOString(),
+    });
+    const requests = await runWorker(
+      job.id,
+      completed ? "review" : "needs_attention",
+      mockStorage +
+        `
+      globalThis.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        console.log(JSON.stringify({url:String(url),schema:body.response_format?.json_schema?.name,
+          target:body.input?.[0]?.content?.[0]?.text}));
+        if (String(url).includes("api.meta.ai"))
+          return new Response(${JSON.stringify(segmentationEvents(maskLine(0, 640, 360)))},
+            {headers:{"content-type":"text/event-stream"}});
+        return Response.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify({
+          decision:"pass",reason:"matched",subjectIdentified:true,description:null
+        })}}]});
+      };
+    `,
+    );
+    assert.equal(
+      requests.some((request) => request.schema === "sam_subject_refinement"),
+      false,
+    );
+    assert.equal(requests.length, completed ? 2 : 0);
+    if (completed) assert.equal(requests[0].target, "person wearing black");
+  }
+});
+
+test("cancelled refinement missing keys and invalid source videos cannot start paid source analysis", async () => {
+  for (const failure of [
+    "cancelled",
+    "missing",
+    "oversized",
+    "missing_meta",
+    "missing_model",
+  ] as const) {
+    const job = await createPreparedSwapFixture();
+    await workspace.update((state) => {
+      const saved = state.jobs[job.id];
+      if (failure === "cancelled") saved.cancel_requested = true;
+      if (failure === "missing") delete state.media[saved.prepared_id!];
+      if (failure === "oversized")
+        state.media[saved.prepared_id!].bytes = 50_000_001;
+    });
+    const requests = await runWorker(
+      job.id,
+      failure === "cancelled" ? "cancelled" : "needs_attention",
+      `
+      globalThis.fetch = async (url) => {console.log(JSON.stringify({url:String(url)})); throw Error("Network forbidden");};
+    `,
+      failure === "missing_meta"
+        ? { META_API_KEY: "" }
+        : failure === "missing_model"
+          ? { BYTEPLUS_API_KEY: "" }
+          : {},
+    );
+    assert.deepEqual(requests, []);
+    assert.equal((await jobRecord(job.id)).meta_response_id, null);
+  }
+});
+
+test("completed empty masks get one corrected SAM attempt and both video reviews are retained", async () => {
+  const job = await createMaskFixture("");
+  const requests = await runWorker(
+    job.id,
+    "review",
+    mockStorage +
+      `
+    let reviews = 0;
+    globalThis.fetch = async (url, options) => {
+      const body = JSON.parse(options.body);
+      console.log(JSON.stringify({url:String(url), target:body.input?.[0]?.content?.[0]?.text}));
+      if (String(url).includes("api.meta.ai"))
+        return new Response(${JSON.stringify(segmentationEvents(maskLine(0, 640, 360)))}, {headers:{"content-type":"text/event-stream"}});
+      reviews++;
+      return Response.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify(reviews === 1
+        ? {decision:"retry",reason:"empty_mask",subjectIdentified:true,description:"person in a black sleeveless shirt"}
+        : {decision:"pass",reason:"matched",subjectIdentified:true,description:null})}}]});
+    };
+  `,
+  );
+  assert.equal(
+    requests.filter((request) => request.url.includes("api.meta.ai")).length,
+    1,
+  );
+  assert.equal(
+    requests.filter((request) => request.url.endsWith("/chat/completions"))
+      .length,
+    2,
+  );
+  const saved = await jobRecord(job.id);
+  assert.equal(saved.config.target, "person");
+  assert.equal(saved.sam_target, "person in a black sleeveless shirt");
+  assert.equal(saved.sam_attempt, 1);
+  assert.equal(saved.sam_verifications?.length, 2);
+  assert.equal(saved.sam_verifications?.[1].model, DEFAULT_SAM_VERIFIER_MODEL);
+  assert.equal(saved.provider_task_id, null);
+  assert.equal(saved.asset_id, null);
+  assert.equal(
+    await samCheckpointStore(job.id, root).read(
+      (state) => state.response?.responseId,
+    ),
+    "original-meta-response",
+  );
+  assert.equal(
+    await samCheckpointStore(job.id, root, 1).read(
+      (state) => state.response?.responseId,
+    ),
+    "resp_synthetic",
+  );
+});
+
+test("an interrupted verifier request cannot be repeated and does not repeat SAM", async () => {
+  const job = await createMaskFixture();
+  await updateJob(job.id, { stage: "mask_verification" });
+  await samCheckpointStore(job.id, root).update((state) => {
+    state.verificationStartedAt = new Date().toISOString();
+  });
+  const requests = await runWorker(
+    job.id,
+    "needs_attention",
+    `
+    globalThis.fetch = async (url) => {console.log(JSON.stringify({url:String(url)})); throw Error("Network forbidden");};
+  `,
+  );
+  assert.deepEqual(requests, []);
+  assert.equal((await jobRecord(job.id)).meta_response_id, null);
+});
+
+test("the second unusable mask stops without a third SAM request", async () => {
+  const job = await createMaskFixture("");
+  const requests = await runWorker(
+    job.id,
+    "needs_attention",
+    mockStorage +
+      `
+    let reviews = 0;
+    globalThis.fetch = async (url) => {
+      console.log(JSON.stringify({url:String(url)}));
+      if (String(url).includes("api.meta.ai"))
+        return new Response(${JSON.stringify(segmentationEvents(""))}, {headers:{"content-type":"text/event-stream"}});
+      reviews++;
+      return Response.json({choices:[{finish_reason:"stop",message:{content:JSON.stringify({
+        decision:"retry",reason:"empty_mask",subjectIdentified:true,
+        description:reviews === 1 ? "person wearing black" : "person wearing a black sleeveless shirt"
+      })}}]});
+    };
+  `,
+  );
+  const saved = await jobRecord(job.id);
+  assert.equal(saved.sam_attempt, 1);
+  assert.equal(saved.sam_verifications?.length, 2);
+  assert.match(saved.error ?? "", /correction limit/);
+  assert.equal(
+    requests.filter((request) => request.url.includes("api.meta.ai")).length,
+    1,
+  );
+  assert.equal(
+    requests.filter((request) => request.url.endsWith("/chat/completions"))
+      .length,
+    2,
+  );
+  assert.equal(saved.provider_task_id, null);
+});
+
+test("a completed verifier checkpoint recovers the review transition without repeating inference", async () => {
+  const job = await createMaskFixture();
+  const maskedId = randomUUID(),
+    comparisonId = randomUUID();
+  const verification = verificationFixture(maskedId, comparisonId);
+  await workspace.update((state) => {
+    for (const [id, kind] of [
+      [maskedId, "masked"],
+      [comparisonId, "verification"],
+    ] as const)
+      state.media[id] = { ...state.media[job.source.id], id, kind };
+  });
+  await updateJob(job.id, { stage: "mask_verification", masked_id: maskedId });
+  await samCheckpointStore(job.id, root).update((state) => {
+    state.maskedId = maskedId;
+    state.comparisonId = comparisonId;
+    state.analysis = verification.analysis;
+    state.verificationStartedAt = new Date().toISOString();
+    state.verification = verification;
+  });
+  const requests = await runWorker(
+    job.id,
+    "review",
+    `
+    globalThis.fetch = async (url) => {console.log(JSON.stringify({url:String(url)})); throw Error("Network forbidden");};
+  `,
+  );
+  assert.deepEqual(requests, []);
+  assert.equal((await jobRecord(job.id)).sam_verifications?.length, 1);
+});
+
+test("ambiguous Meta submissions and cancelled masking jobs cannot start verification or a correction", async () => {
+  for (const cancelled of [false, true]) {
+    const job = await createFixture();
+    await updateJob(job.id, {
+      status: "processing",
+      stage: "masking",
+      submission_started_at: new Date().toISOString(),
+      cancel_requested: cancelled,
+    });
+    const requests = await runWorker(
+      job.id,
+      cancelled ? "cancelled" : "needs_attention",
+      `
+      globalThis.fetch = async (url) => {console.log(JSON.stringify({url:String(url)})); throw Error("Network forbidden");};
+    `,
+    );
+    assert.deepEqual(requests, []);
+  }
+});
 
 test("new workflow workers prepare the original video without SAM or image preparation", async () => {
   for (const workflow of [

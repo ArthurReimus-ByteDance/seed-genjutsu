@@ -11,6 +11,11 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import { env } from "@/env";
+import {
+  maskAnalysisSchema,
+  samRefinementSchema,
+  samVerificationSchema,
+} from "@/lib/sam-verification";
 import { AppError } from "./http";
 import { JsonFileStore } from "./json-file";
 import { ProviderError } from "./providers";
@@ -70,13 +75,25 @@ const checkpointSchema = z.object({
       output: z.string().max(outputLimit),
     })
     .nullable(),
+  refinementStartedAt: z.iso.datetime().optional(),
+  refinement: samRefinementSchema.optional(),
+  maskedId: z.uuid().optional(),
+  comparisonId: z.uuid().optional(),
+  analysis: maskAnalysisSchema.optional(),
+  verificationStartedAt: z.iso.datetime().optional(),
+  verification: samVerificationSchema.optional(),
 });
 
 // Keep large mask payloads outside the frequently rewritten workspace index.
-export function samCheckpointStore(jobId: string, root = env.MEDIA_ROOT) {
+export function samCheckpointStore(
+  jobId: string,
+  root = env.MEDIA_ROOT,
+  attempt = 0,
+) {
   z.uuid().parse(jobId);
+  z.number().int().min(0).max(1).parse(attempt);
   return new JsonFileStore(
-    path.resolve(root, "sam", jobId + ".json"),
+    path.resolve(root, "sam", jobId + (attempt ? ".retry-1" : "") + ".json"),
     checkpointSchema,
     () => ({ version: 1 as const, response: null }),
   );

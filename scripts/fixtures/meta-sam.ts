@@ -1,3 +1,9 @@
+import {
+  DEFAULT_SAM_VERIFIER_MODEL,
+  type SamRefinement,
+  type SamVerification,
+} from "../../src/lib/sam-verification";
+
 // Shared CLI/test fixture: synthetic SAM wire data, not model segmentation.
 // The payload encodes a 20x20 one_bit mask filled with foreground pixels.
 export function maskLine(
@@ -30,4 +36,51 @@ export function segmentationEvents(output: string, complete = true) {
         "event: " + value.type + "\ndata: " + JSON.stringify(value) + "\n\n",
     )
     .join("");
+}
+
+export function verificationFixture(
+  maskedId: string,
+  comparisonId: string,
+  target = "person",
+): SamVerification {
+  return {
+    decision: "pass",
+    reason: "matched",
+    subjectIdentified: true,
+    description: null,
+    model: DEFAULT_SAM_VERIFIER_MODEL,
+    attempt: 1,
+    target,
+    maskedId,
+    comparisonId,
+    analysis: {
+      objects: 1,
+      maskedFrames: 1,
+      totalFrames: 96,
+      foregroundPixels: 400,
+      minConfidence: null,
+      issue: null,
+    },
+    inputTokens: null,
+    outputTokens: null,
+    reviewedAt: new Date().toISOString(),
+  };
+}
+
+export function refinementFixture(
+  preparedId: string,
+  originalTarget = "person",
+  description = originalTarget,
+): SamRefinement {
+  return {
+    decision: "ready",
+    reason: "identified",
+    description,
+    model: DEFAULT_SAM_VERIFIER_MODEL,
+    originalTarget,
+    preparedId,
+    inputTokens: null,
+    outputTokens: null,
+    refinedAt: new Date().toISOString(),
+  };
 }

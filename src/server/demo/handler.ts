@@ -131,6 +131,8 @@ export async function demoHandler(request: Request, parts: string[]) {
           storage: true,
           portraits: true,
           sam: true,
+          samVerification: true,
+          samVerifierModel: "Preview - simulated",
           promptEnhancement: true,
           promptEnhancerModel: "Preview · simulated",
           seedanceModel: videoModels[DEFAULT_VIDEO_MODEL].providerId,

@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createJobSchema, jobSchema, type CreateJob } from "../src/lib/schemas";
+import {
+  refinementFixture,
+  verificationFixture,
+} from "../scripts/fixtures/meta-sam";
 
 const root = await mkdtemp(path.join(tmpdir(), "recast-job-test-"));
 process.env.MEDIA_ROOT = root;
@@ -23,6 +27,8 @@ const {
   presentJob,
   validateSubmission,
   renewLease,
+  completeSamVerification,
+  completeSamRefinement,
 } = await import("../src/server/jobs");
 after(() => rm(root, { recursive: true, force: true }));
 beforeEach(() =>
@@ -207,6 +213,9 @@ test("swaps still require the actual masked video and their optional prepared an
   const masked = await preparedMedia("masked");
   await updateJob(job.id, {
     masked_id: masked.id,
+    sam_target: job.config.target,
+    sam_refinement: refinementFixture(prepared.id),
+    sam_verifications: [verificationFixture(masked.id, prepared.id)],
     config: { ...job.config, prepareImage: true },
   });
   await assert.rejects(approveJob(job.id));
@@ -215,6 +224,209 @@ test("swaps still require the actual masked video and their optional prepared an
   const anchor = await preparedMedia("anchor");
   await updateJob(job.id, { anchor_id: anchor.id });
   assert.equal((await approveJob(job.id)).stage, "registering");
+});
+
+test("new swaps cannot approve or submit an unverified or replaced mask", async () => {
+  const job = await createTestTake();
+  const prepared = await preparedMedia();
+  const masked = await preparedMedia("masked");
+  await updateJob(job.id, {
+    prepared_id: prepared.id,
+    sam_target: job.config.target,
+    sam_refinement: refinementFixture(prepared.id),
+    masked_id: masked.id,
+    status: "awaiting_approval",
+    stage: "review",
+  });
+  await assert.rejects(approveJob(job.id));
+  await assert.rejects(
+    validateSubmission(job.id),
+    /not passed AI verification/,
+  );
+  await updateJob(job.id, {
+    sam_verifications: [verificationFixture(masked.id, randomUUID())],
+  });
+  assert.equal((await validateSubmission(job.id)).registration.id, masked.id);
+  const replacement = await preparedMedia("masked");
+  await updateJob(job.id, { masked_id: replacement.id });
+  await assert.rejects(
+    validateSubmission(job.id),
+    /not passed AI verification/,
+  );
+});
+
+test("verification retry commits one correction atomically and preserves the original subject", async () => {
+  const job = await createTestTake();
+  const masked = await preparedMedia("masked");
+  await claimJob("verifier-worker");
+  await updateJob(job.id, { stage: "mask_verification", masked_id: masked.id });
+  const verification = {
+    ...verificationFixture(masked.id, randomUUID()),
+    decision: "retry" as const,
+    reason: "wrong_subject" as const,
+    description: "person in a black sleeveless shirt",
+  };
+  const outcomes = await Promise.allSettled([
+    completeSamVerification(job.id, "verifier-worker", verification),
+    completeSamVerification(job.id, "verifier-worker", verification),
+  ]);
+  assert.equal(
+    outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+    1,
+  );
+  const saved = await jobRecord(job.id);
+  assert.equal(saved.stage, "masking");
+  assert.equal(saved.sam_attempt, 1);
+  assert.equal(saved.sam_target, verification.description);
+  assert.equal(saved.config.target, "person");
+  assert.equal(saved.masked_id, null);
+  assert.equal(saved.sam_verifications?.length, 1);
+});
+
+test("source refinement commits once with original intent and exposes a separate public report", async () => {
+  const job = await createTestTake();
+  const prepared = await preparedMedia();
+  await claimJob("refinement-worker");
+  await updateJob(job.id, {
+    stage: "prompt_refinement",
+    prepared_id: prepared.id,
+  });
+  const refinement = refinementFixture(
+    prepared.id,
+    "person",
+    "person wearing black",
+  );
+  const outcomes = await Promise.allSettled([
+    completeSamRefinement(job.id, "refinement-worker", refinement),
+    completeSamRefinement(job.id, "refinement-worker", refinement),
+  ]);
+  assert.equal(
+    outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+    1,
+  );
+  const saved = await jobRecord(job.id);
+  assert.equal(saved.config.target, "person");
+  assert.equal(saved.sam_target, "person wearing black");
+  assert.equal(saved.stage, "masking");
+  assert.equal(saved.sam_attempt, 0);
+  assert.deepEqual((await presentJob(saved)).samRefinement, refinement);
+});
+
+test("approval binds source refinement to the current clip model and original description", async () => {
+  const job = await createTestTake();
+  const prepared = await preparedMedia();
+  const masked = await preparedMedia("masked");
+  const refinement = refinementFixture(prepared.id);
+  await updateJob(job.id, {
+    stage: "review",
+    status: "awaiting_approval",
+    prepared_id: prepared.id,
+    masked_id: masked.id,
+    sam_target: "person",
+    sam_verifications: [verificationFixture(masked.id, randomUUID())],
+  });
+  await assert.rejects(approveJob(job.id));
+  for (const report of [
+    { ...refinement, preparedId: randomUUID() },
+    { ...refinement, model: "different-model" },
+    { ...refinement, originalTarget: "someone else" },
+    { ...refinement, description: "different subject" },
+    { ...refinement, decision: "needs_review" as const, description: null },
+  ]) {
+    await updateJob(job.id, { sam_refinement: report });
+    await assert.rejects(validateSubmission(job.id), /prompt refinement/);
+  }
+  await updateJob(job.id, { sam_refinement: refinement });
+  assert.equal((await approveJob(job.id)).stage, "registering");
+});
+
+test("ambiguous refinement and cancelled or expired leases cannot start masking", async () => {
+  for (const state of [
+    "ambiguous",
+    "cancelled",
+    "expired",
+    "wrong-clip",
+  ] as const) {
+    const job = await createTestTake(false);
+    const prepared = await preparedMedia();
+    await claimJob("refinement-worker");
+    await updateJob(job.id, {
+      stage: "prompt_refinement",
+      prepared_id: prepared.id,
+      cancel_requested: state === "cancelled",
+      lease_until: state === "expired" ? Date.now() - 1 : Date.now() + 60000,
+    });
+    const refinement = refinementFixture(prepared.id);
+    if (state === "ambiguous") {
+      refinement.decision = "needs_review";
+      refinement.reason = "ambiguous_subject";
+      refinement.description = null;
+    }
+    if (state === "wrong-clip") refinement.preparedId = randomUUID();
+    if (state === "expired" || state === "wrong-clip")
+      await assert.rejects(
+        completeSamRefinement(job.id, "refinement-worker", refinement),
+      );
+    else await completeSamRefinement(job.id, "refinement-worker", refinement);
+    const saved = await jobRecord(job.id);
+    assert.equal(saved.stage, "prompt_refinement");
+    assert.equal(saved.sam_target, undefined);
+    assert.equal(saved.meta_response_id, null);
+    if (state === "ambiguous") assert.equal(saved.status, "needs_attention");
+    await updateJob(job.id, {
+      status: "cancelled",
+      lease_owner: null,
+      lease_until: null,
+    });
+  }
+});
+
+test("uncertain verification blocks optional scene preparation and automatic generation", async () => {
+  const job = await createTestTake(false);
+  const masked = await preparedMedia("masked");
+  await claimJob("verifier-worker");
+  await updateJob(job.id, {
+    stage: "mask_verification",
+    masked_id: masked.id,
+    config: { ...job.config, prepareImage: true },
+  });
+  await completeSamVerification(job.id, "verifier-worker", {
+    ...verificationFixture(masked.id, randomUUID()),
+    decision: "needs_review",
+    reason: "uncertain",
+    subjectIdentified: false,
+  });
+  const saved = await jobRecord(job.id);
+  assert.equal(saved.status, "needs_attention");
+  assert.equal(saved.stage, "mask_verification");
+  assert.equal(saved.anchor_id, null);
+  assert.equal(saved.asset_id, null);
+  await assert.rejects(approveJob(job.id));
+});
+
+test("cancelled or expired workers cannot advance a take after vision review", async () => {
+  const job = await createTestTake();
+  const masked = await preparedMedia("masked");
+  await claimJob("verifier-worker");
+  await updateJob(job.id, {
+    stage: "mask_verification",
+    masked_id: masked.id,
+    lease_until: Date.now() - 1,
+  });
+  const verification = verificationFixture(masked.id, randomUUID());
+  await assert.rejects(
+    completeSamVerification(job.id, "verifier-worker", verification),
+    /owns the take/,
+  );
+  await updateJob(job.id, {
+    lease_until: Date.now() + 60000,
+    cancel_requested: true,
+  });
+  await completeSamVerification(job.id, "verifier-worker", verification);
+  const saved = await jobRecord(job.id);
+  assert.equal(saved.stage, "mask_verification");
+  assert.equal(saved.cancel_requested, true);
+  assert.equal(saved.sam_verifications?.length, 1);
 });
 
 test("creation rejects missing wrong-kind and unsupported reference images before queueing", async () => {

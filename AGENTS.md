@@ -1,3 +1,8 @@
+# Project Guidance
+
+Read and follow [`.agents/AGENTS.md`](.agents/AGENTS.md) before repository work.
+All changes go through pull requests targeting `artreimus/seed-genjutsu:main`.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 ## This is NOT the Next.js you know

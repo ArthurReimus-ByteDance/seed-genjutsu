@@ -1,6 +1,7 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 import { videoModels } from "./lib/video-models";
+import { DEFAULT_SAM_VERIFIER_MODEL } from "./lib/sam-verification";
 
 export const env = createEnv({
   server: {
@@ -36,6 +37,8 @@ export const env = createEnv({
       .default(videoModels["seedance-2.5"].providerId),
     SEEDREAM_MODEL: z.string().optional(),
     META_API_KEY: z.string().optional(),
+    SAM_VERIFIER_MODEL: z.string().min(1).default(DEFAULT_SAM_VERIFIER_MODEL),
+    SAM_VERIFIER_FPS: z.coerce.number().min(0.2).max(5).default(2),
     STORAGE_MODE: z.enum(["local", "tos"]).default("local"),
     TOS_BUCKET: z.string().optional(),
     TOS_REGION: z.string().default("ap-southeast-1"),
@@ -62,6 +65,8 @@ export const env = createEnv({
     SEEDANCE_2_5_MODEL: process.env.SEEDANCE_2_5_MODEL,
     SEEDREAM_MODEL: process.env.SEEDREAM_MODEL,
     META_API_KEY: process.env.META_API_KEY,
+    SAM_VERIFIER_MODEL: process.env.SAM_VERIFIER_MODEL,
+    SAM_VERIFIER_FPS: process.env.SAM_VERIFIER_FPS,
     STORAGE_MODE: process.env.STORAGE_MODE,
     TOS_BUCKET: process.env.TOS_BUCKET,
     TOS_REGION: process.env.TOS_REGION,
