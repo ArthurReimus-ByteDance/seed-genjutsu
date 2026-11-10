@@ -6,12 +6,12 @@ These are application workflows over BytePlus APIs, not new models or a guarante
 
 ## Inputs And Review
 
-| Workflow        | Image references                                                      | Video preparation                                                  |
-| --------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Character Swap  | One required character image                                          | Trim, SAM tracking, gray silhouette, optional Seedream scene image |
-| Edit Elements   | Optional object, garment, identity, character, scene, or style images | Trim and normalize the original video, without SAM                 |
-| Motion Transfer | At least one character, identity, or scene image                      | Trim and normalize the original movement donor, without SAM        |
-| Restyle         | Optional style images; choose a local preset or custom direction      | Trim and normalize the original video, without SAM                 |
+| Workflow        | Image references                                                      | Video preparation                                                                                               |
+| --------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Character Swap  | One required character image                                          | Trim, AI subject refinement, SAM tracking, gray silhouette, AI mask verification, optional Seedream scene image |
+| Edit Elements   | Optional object, garment, identity, character, scene, or style images | Trim and normalize the original video, without SAM                                                              |
+| Motion Transfer | At least one character, identity, or scene image                      | Trim and normalize the original movement donor, without SAM                                                     |
+| Restyle         | Optional style images; choose a local preset or custom direction      | Trim and normalize the original video, without SAM                                                              |
 
 Element editing supports replace, add, remove, and modify operations. Wardrobe changes are element edits with garment references; the instructions retain the source identity unless replacement is requested. Text edits preserve quoted wording in the submitted prompt, but generated typography is not guaranteed to be exact.
 
@@ -27,9 +27,15 @@ This view follows [`scripts/worker.ts`](../scripts/worker.ts), [`approveJob` and
 flowchart TD
     Input["Validated workflow, clip, references, direction"] --> Trim["Trim original video and save first frame"]
     Trim --> Mode{"Character swap?"}
-    Mode -->|Yes| Mask["SAM silhouette and optional Seedream image"]
+    Mode -->|Yes| Refine["DeepSeek source video + original subject description"]
+    Refine -->|Clear subject and refined SAM phrase| Mask["SAM silhouette and synchronized comparison video"]
+    Refine -->|Ambiguous, missing or unavailable| Attention
     Mode -->|No| Original["Use prepared original video"]
-    Mask --> Review{"Manual review enabled?"}
+    Mask --> Verify["DeepSeek V4.1 Flash video mask verification"]
+    Verify -->|Pass| Scene["Optional Seedream scene image"]
+    Verify -->|One clear description correction| Mask
+    Verify -->|Uncertain or retries exhausted| Attention["Needs attention - no generation"]
+    Scene --> Review{"Manual review enabled?"}
     Original --> Review
     Review -->|Yes| Approve["Review actual clip and references"]
     Approve -->|Approve| Validate["Revalidate provider-bound media"]
@@ -58,7 +64,7 @@ All workflows retain the existing Virtual Portrait path:
 2. Poll the asset until it is Active.
 3. Submit its `asset://` reference to Seedance.
 
-There is no new onboarding or verification process in this release. **Active is a provider processing status, not evidence of verified real-person authorization.** BytePlus documents eligibility restrictions and authorized-asset requirements for real-face references. The app does not remove those requirements or guarantee that an AIGC asset registration is sufficient. Provider registration, moderation, task-type, or eligibility failures stop the take with a sanitized error; interrupted submissions are not blindly repeated.
+There is no new real-person onboarding or authorization verification process in this release. AI refinement and verification concern source-subject selection and the subject mask, not authorization. **Active is a provider processing status, not evidence of verified real-person authorization.** BytePlus documents eligibility restrictions and authorized-asset requirements for real-face references. The app does not remove those requirements or guarantee that an AIGC asset registration is sufficient. Provider registration, moderation, task-type, or eligibility failures stop the take with a sanitized error; interrupted submissions are not blindly repeated.
 
 Image references are sent through the existing image-reference transport. Registering the video does not establish eligibility of every supplied image. Follow the provider's real-person requirements for both modalities.
 
@@ -76,6 +82,10 @@ Discovery endpoints:
 
 - `GET /api/capabilities` includes workflows, configuration readiness, supported image counts, and SAM requirements. Configuration readiness is not an account-entitlement or quality claim.
 - `GET /api/presets?workflow=restyle` returns local preset IDs, revision, label, direction, and `qualityValidated: false`.
+
+New Character Swap jobs include mandatory `prompt_refinement` before SAM and `mask_verification` before prepared-reference review. Both use the same pinned DeepSeek V4.1 Flash video model. `job.samRefinement` holds the source-refinement decision, original description, refined SAM phrase, prepared-video ID, model and token usage when returned. `job.maskComparison` is the synchronized source/red-overlay MP4; `job.maskVerifications` retains up to two structured reports, attempt numbers, effective source phrases, model binding and token usage when returned. The original `job.config.target` is unchanged. Non-swap and older jobs may omit those fields.
+
+Ambiguous/missing subjects or failed refinement stop before SAM. Empty, multiple-object or clearly wrong masks may receive one automatic description correction only when the same intended source subject is identified. Initial source refinement is not repeated on that correction. Uncertain subjects, partial masks, failed verifier requests and exhausted corrections stop at `needs_attention`, without optional scene generation, registration or Seedance submission. Approval and submission bind usable source refinement to the original description/prepared clip and the passed mask report to the actual current mask. See [AI source refinement](meta-sam.md#ai-source-subject-refinement) and [AI video verification](meta-sam.md#ai-video-verification) for configuration, cost and recovery boundaries.
 
 An element edit without replacement images:
 

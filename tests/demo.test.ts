@@ -110,6 +110,31 @@ function workflowFixture(workflow: WorkflowId): DemoRecord {
   }
   return record;
 }
+
+test("preview shows source refinement and video mask verification only for swaps without claiming inference quality", () => {
+  const refining = advanceDemo(fixture(), now + 1000);
+  assert.equal(refining.job.stage, "prompt_refinement");
+  assert.match(refining.job.events.at(-1)!.message, /simulated/);
+  assert.equal(refining.job.samRefinement, undefined);
+  const record = advanceDemo(fixture(), now + 4000);
+  assert.equal(record.job.stage, "mask_verification");
+  assert.match(record.job.events.at(-1)!.message, /simulated/);
+  assert.equal(record.job.maskVerifications, undefined);
+  for (const workflow of [
+    "element_edit",
+    "motion_transfer",
+    "restyle",
+  ] as const) {
+    assert.notEqual(
+      advanceDemo(workflowFixture(workflow), now + 1000).job.stage,
+      "prompt_refinement",
+    );
+    assert.notEqual(
+      advanceDemo(workflowFixture(workflow), now + 4000).job.stage,
+      "mask_verification",
+    );
+  }
+});
 async function request(
   endpoint: string,
   input?: unknown,

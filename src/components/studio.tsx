@@ -1497,6 +1497,14 @@ export function Studio({
                     optional: !swap,
                   },
                   {
+                    name: "DeepSeek V4.1 Flash",
+                    description: swap
+                      ? "Source prompt refinement and mask review - BytePlus ModelArk"
+                      : "SAM refinement and review are only used by Character Swap",
+                    ready: capabilities.data?.samVerification,
+                    optional: !swap,
+                  },
+                  {
                     name: "Virtual Portrait",
                     description: "Video reference registration",
                     ready: capabilities.data?.portraits,

@@ -11,6 +11,10 @@ import { Library } from "../src/components/studio/library";
 import { UploadTile } from "../src/components/upload-tile";
 import { createJobSchema, type Job, type Upload } from "../src/lib/schemas";
 import { api } from "../src/lib/api";
+import {
+  refinementFixture,
+  verificationFixture,
+} from "../scripts/fixtures/meta-sam";
 
 const require = createRequire(import.meta.url);
 const { ReferenceTray } =
@@ -59,6 +63,110 @@ function reviewJob(): Job {
     events: [],
   };
 }
+
+test("source refinement displays a distinct stage and preserves the original description in run details", () => {
+  const job = reviewJob();
+  const character = media();
+  job.config = createJobSchema.parse({
+    ...job.config,
+    workflow: "character_swap",
+    characterId: character.id,
+    stylePreset: "custom",
+    prompt: "Preserve the original performance.",
+  });
+  job.character = character;
+  job.stage = "prompt_refinement";
+  job.status = "processing";
+  const canvas = renderToStaticMarkup(
+    createElement(MediaCanvas, {
+      source: job.source,
+      job,
+      start: 0,
+      duration: 4,
+      tab: null,
+      onTab: noop,
+    }),
+  );
+  assert.match(canvas, /Refining source subject/);
+  job.samRefinement = refinementFixture(
+    job.prepared!.id,
+    "person",
+    "person wearing black",
+  );
+  const props = {
+    job,
+    onApprove: noop,
+    onReuse: noop,
+    onCancel: noop,
+    approving: false,
+    cancelling: false,
+    reuseDisabled: false,
+  };
+  const details = renderToStaticMarkup(createElement(RunDetails, props));
+  assert.match(details, />Refine<\/li>/);
+  assert.match(details, /Original source subject: person/);
+  assert.match(details, /SAM description: person wearing black/);
+  job.status = "needs_attention";
+  const stopped = renderToStaticMarkup(createElement(RunDetails, props));
+  assert.match(stopped, /AI subject refinement stopped before SAM/);
+  assert.ok(!stopped.includes("submission wasn’t confirmed"));
+  assert.ok(!stopped.includes("Approve &amp; create video"));
+});
+
+test("swap verification exposes its stage and a labeled synchronized mask-check video", () => {
+  const job = reviewJob();
+  const character = media();
+  job.config = createJobSchema.parse({
+    ...job.config,
+    workflow: "character_swap",
+    characterId: character.id,
+    stylePreset: "custom",
+    prompt: "Preserve the original performance.",
+  });
+  job.character = character;
+  job.masked = media("masked");
+  job.maskComparison = media("verification");
+  job.stage = "mask_verification";
+  job.status = "processing";
+  const markup = renderToStaticMarkup(
+    createElement(MediaCanvas, {
+      source: job.source,
+      job,
+      start: 0,
+      duration: 4,
+      tab: "mask_comparison",
+      onTab: noop,
+    }),
+  );
+  assert.match(markup, /Mask Check/);
+  assert.match(markup, /Verifying subject tracking/);
+  assert.match(markup, /Original left, mask overlay right/);
+  assert.match(markup, /Original and red SAM mask comparison/);
+  job.status = "needs_attention";
+  job.maskVerifications = [
+    {
+      ...verificationFixture(job.masked.id, job.maskComparison.id),
+      decision: "needs_review",
+      reason: "partial_mask",
+    },
+  ];
+  const details = renderToStaticMarkup(
+    createElement(RunDetails, {
+      job,
+      onApprove: noop,
+      onReuse: noop,
+      onCancel: noop,
+      approving: false,
+      cancelling: false,
+      reuseDisabled: false,
+    }),
+  );
+  assert.match(details, />Verify<\/li>/);
+  assert.match(details, /AI mask verification stopped this take/);
+  assert.match(details, /not frame-by-frame tracking or consent verification/);
+  assert.ok(!details.includes("submission wasn’t confirmed"));
+  assert.ok(!details.includes("Approve &amp; create video"));
+});
 
 test("the focusable clip slider thumb has its own accessible name and description", () => {
   const markup = renderToStaticMarkup(

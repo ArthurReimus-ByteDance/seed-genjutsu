@@ -42,11 +42,17 @@ export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
       message = characterSwap
         ? "Your sample references are ready for review."
         : "Your original prepared clip is ready for review. Generation is simulated.";
-    } else if (characterSwap && elapsed >= 3500 && job.config.prepareImage) {
+    } else if (characterSwap && elapsed >= 4750 && job.config.prepareImage) {
       stage = "image_preparation";
       status = "processing";
       progress = 35;
       message = "Preparing the scene look (simulated).";
+    } else if (characterSwap && elapsed >= 3500) {
+      stage = "mask_verification";
+      status = "processing";
+      progress = 30;
+      message =
+        "AI video mask verification (simulated). No VLM inference or mask-quality assessment is performed.";
     } else if (elapsed >= 1500) {
       stage = characterSwap ? "masking" : "trimming";
       status = "processing";
@@ -54,6 +60,12 @@ export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
       message = characterSwap
         ? "Tracking the subject (simulated)."
         : "Trimming and normalizing the original clip. SAM masking is skipped.";
+    } else if (characterSwap && elapsed >= 750) {
+      stage = "prompt_refinement";
+      status = "processing";
+      progress = 10;
+      message =
+        "AI source-subject prompt refinement (simulated). No DeepSeek inference or subject identification is performed.";
     }
   } else {
     if (elapsed >= 10000) {

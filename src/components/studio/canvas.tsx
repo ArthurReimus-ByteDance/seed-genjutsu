@@ -17,6 +17,10 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Job, Upload } from "@/lib/schemas";
 import { workflows } from "@/lib/workflows";
+import {
+  maskReviewReasons,
+  samRefinementReasons,
+} from "@/lib/sam-verification";
 import { reviewMedia } from "./workflow-state";
 
 export const statusNames: Record<Job["status"], string> = {
@@ -39,7 +43,11 @@ export function StatusBadge({ job }: { job: Job }) {
       ) : (
         <span />
       )}
-      {statusNames[job.status]}
+      {job.stage === "mask_verification" && job.status === "processing"
+        ? "Verifying"
+        : job.stage === "prompt_refinement" && job.status === "processing"
+          ? "Refining"
+          : statusNames[job.status]}
     </span>
   );
 }
@@ -273,7 +281,7 @@ function SyncedCompare({ job }: { job: Job }) {
   );
 }
 export function JobStepper({ job }: { job: Job }) {
-  const index =
+  const baseIndex =
     job.status === "succeeded"
       ? 3
       : job.status === "awaiting_approval" || job.stage === "review"
@@ -283,7 +291,21 @@ export function JobStepper({ job }: { job: Job }) {
             )
           ? 2
           : 0;
-  const steps = ["Prepare", "Review", "Create", "Ready"];
+  const swap = job.config.workflow === "character_swap";
+  const index = swap
+    ? job.stage === "prompt_refinement" || job.stage === "masking"
+      ? 1
+      : job.stage === "mask_verification"
+        ? 2
+        : job.stage === "image_preparation"
+          ? 3
+          : baseIndex > 0
+            ? baseIndex + 2
+            : 0
+    : baseIndex;
+  const steps = swap
+    ? ["Prepare", "Refine", "Verify", "Review", "Create", "Ready"]
+    : ["Prepare", "Review", "Create", "Ready"];
   return (
     <ol className="job-stepper" aria-label="Generation stages">
       {steps.map((label, i) => (
@@ -323,6 +345,11 @@ export function MediaCanvas({
       media: !swap && job?.prepared,
     },
     { id: "masked", label: "Subject", media: swap && job?.masked },
+    {
+      id: "mask_comparison",
+      label: "Mask Check",
+      media: swap && job?.maskComparison,
+    },
     { id: "anchor", label: "Scene look", media: swap && job?.anchor },
     { id: "result", label: "Result", media: job?.result },
     { id: "compare", label: "Compare", media: job?.result },
@@ -332,27 +359,33 @@ export function MediaCanvas({
       ? tab
       : job?.result
         ? "result"
-        : job?.status === "awaiting_approval"
-          ? !swap
-            ? job.prepared
-              ? "prepared"
-              : "source"
-            : job.anchor
-              ? "anchor"
-              : job.masked
-                ? "masked"
+        : job?.stage === "mask_verification" &&
+            job.status === "needs_attention" &&
+            job.maskComparison
+          ? "mask_comparison"
+          : job?.status === "awaiting_approval"
+            ? !swap
+              ? job.prepared
+                ? "prepared"
                 : "source"
-          : "source";
+              : job.anchor
+                ? "anchor"
+                : job.masked
+                  ? "masked"
+                  : "source"
+            : "source";
   const selected =
-    chosen === "result" || chosen === "compare"
-      ? job?.result
-      : chosen === "anchor"
-        ? job?.anchor
-        : chosen === "masked"
-          ? job?.masked
-          : chosen === "prepared"
-            ? job?.prepared
-            : source;
+    chosen === "mask_comparison"
+      ? job?.maskComparison
+      : chosen === "result" || chosen === "compare"
+        ? job?.result
+        : chosen === "anchor"
+          ? job?.anchor
+          : chosen === "masked"
+            ? job?.masked
+            : chosen === "prepared"
+              ? job?.prepared
+              : source;
   const busy =
     job && ["queued", "processing", "generating"].includes(job.status);
   const displayedDuration =
@@ -402,9 +435,11 @@ export function MediaCanvas({
                   ? "Result preview"
                   : chosen === "masked"
                     ? "Subject preview"
-                    : chosen === "prepared"
-                      ? "Prepared original video preview"
-                      : "Performance preview"
+                    : chosen === "mask_comparison"
+                      ? "Original and red SAM mask comparison"
+                      : chosen === "prepared"
+                        ? "Prepared original video preview"
+                        : "Performance preview"
               }
             />
           ) : selected ? (
@@ -428,17 +463,21 @@ export function MediaCanvas({
               </span>
               <div>
                 <strong>
-                  {job.stage === "registering"
-                    ? "Registering your reference"
-                    : job.stage === "asset_review"
-                      ? "Checking your reference"
-                      : job.stage === "submitting"
-                        ? "Starting video generation"
-                        : job.stage === "image_preparation"
-                          ? "Preparing the scene look"
-                          : job.status === "generating"
-                            ? "Creating your take"
-                            : "Preparing your references"}
+                  {job.stage === "mask_verification"
+                    ? "Verifying subject tracking"
+                    : job.stage === "prompt_refinement"
+                      ? "Refining source subject"
+                      : job.stage === "registering"
+                        ? "Registering your reference"
+                        : job.stage === "asset_review"
+                          ? "Checking your reference"
+                          : job.stage === "submitting"
+                            ? "Starting video generation"
+                            : job.stage === "image_preparation"
+                              ? "Preparing the scene look"
+                              : job.status === "generating"
+                                ? "Creating your take"
+                                : "Preparing your references"}
                 </strong>
                 <span>This take is saved. You can come back anytime.</span>
               </div>
@@ -461,9 +500,11 @@ export function MediaCanvas({
               ? "Synchronized comparison"
               : chosen === "anchor"
                 ? "Appearance reference"
-                : chosen === "prepared"
-                  ? "Original clip for registration"
-                  : "Performance reference"}
+                : chosen === "mask_comparison"
+                  ? "Original left, mask overlay right"
+                  : chosen === "prepared"
+                    ? "Original clip for registration"
+                    : "Performance reference"}
         </span>
       </div>
       {busy && (
@@ -505,6 +546,8 @@ export function RunDetails({
   const uncertain = job.status === "needs_attention";
   const failed = job.status === "failed" || uncertain;
   const done = job.status === "succeeded";
+  const refinement = job.samRefinement;
+  const verification = job.maskVerifications?.at(-1);
   return (
     <section
       className={cn(
@@ -538,7 +581,11 @@ export function RunDetails({
                   : "Review the prepared original clip and ordered images, then approve to create your video."
                 : failed
                   ? uncertain
-                    ? "The provider submission wasn’t confirmed. Check for an existing provider task before creating another."
+                    ? job.stage === "mask_verification"
+                      ? "AI mask verification stopped this take. Review Mask Check and the activity log before starting another."
+                      : job.stage === "prompt_refinement"
+                        ? "AI subject refinement stopped before SAM. Check the error and activity log, then clarify the intended source subject for a new take."
+                        : "The provider submission wasn’t confirmed. Check for an existing provider task before creating another."
                     : "Your references and direction are saved. You can edit them for a new take."
                   : job.status === "cancelled"
                     ? "Your references are still here whenever you’re ready."
@@ -617,6 +664,37 @@ export function RunDetails({
           Virtual Portrait registers the video reference; it does not verify
           consent.
         </p>
+      )}
+      {swap && refinement && (
+        <div className="review-disclaimer">
+          <p>Original source subject: {refinement.originalTarget}</p>
+          <p>
+            {refinement.decision === "ready" && refinement.description
+              ? "SAM description: " + refinement.description
+              : samRefinementReasons[refinement.reason]}
+          </p>
+        </div>
+      )}
+      {swap && verification && (
+        <div className="review-disclaimer">
+          <p>
+            AI mask verification:{" "}
+            {verification.decision === "pass"
+              ? "Passed"
+              : verification.decision === "retry" && !failed
+                ? "Correction requested"
+                : "Needs attention"}
+            . {maskReviewReasons[verification.reason]} Attempt{" "}
+            {verification.attempt} of 2.
+          </p>
+          {verification.attempt > 1 && (
+            <p>Corrected source subject: {verification.target}</p>
+          )}
+          <p>
+            Sampled video review is not frame-by-frame tracking or consent
+            verification.
+          </p>
+        </div>
       )}
       {job.error && (
         <div className="run-error" role="alert">

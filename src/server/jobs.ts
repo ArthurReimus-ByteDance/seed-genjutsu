@@ -7,6 +7,14 @@ import { createJobSchema, type CreateJob, type Job } from "@/lib/schemas";
 import { effectiveDirection, registrationMediaId } from "@/lib/workflows";
 import { providerModelId } from "./video-models";
 import {
+  maskReviewReasons,
+  resolveMaskReview,
+  samRefinementReasons,
+  usableSamRefinement,
+  type SamRefinement,
+  type SamVerification,
+} from "@/lib/sam-verification";
+import {
   validateSourceVideo,
   validateReferenceImage,
   validateReferenceVideo,
@@ -15,6 +23,18 @@ const runnable = (status: string) =>
   ["queued", "processing", "generating"].includes(status);
 const finished = (status: string) =>
   ["succeeded", "failed", "cancelled", "needs_attention"].includes(status);
+
+export function hasUsableSamRefinement(job: StoredJob) {
+  const refinement = job.sam_refinement;
+  return (
+    !!refinement &&
+    usableSamRefinement(refinement) &&
+    refinement.model === job.sam_verifier_model_id &&
+    refinement.preparedId === job.prepared_id &&
+    refinement.originalTarget === job.config.target &&
+    ((job.sam_attempt ?? 0) > 0 || refinement.description === job.sam_target)
+  );
+}
 
 function requiredMedia(media: Record<string, StoredMedia>, id: string | null) {
   if (!id || !media[id])
@@ -44,6 +64,43 @@ function reviewMedia(
   job: StoredJob,
   requireAnchor = true,
 ) {
+  if (
+    job.config.workflow === "character_swap" &&
+    job.sam_refinement_required &&
+    !hasUsableSamRefinement(job)
+  )
+    throw new AppError(
+      409,
+      "SUBJECT_NOT_REFINED",
+      "The source subject has not passed AI prompt refinement.",
+    );
+  if (job.config.workflow === "character_swap" && job.sam_refinement_required)
+    validateReferenceVideo(
+      requiredMedia(media, job.prepared_id),
+      "prepared",
+      job.config.duration,
+    );
+  if (job.config.workflow === "character_swap" && job.sam_verifier_model_id) {
+    const verification = job.sam_verifications?.at(-1);
+    if (
+      !verification ||
+      verification.maskedId !== job.masked_id ||
+      verification.model !== job.sam_verifier_model_id ||
+      verification.attempt !== (job.sam_attempt ?? 0) + 1 ||
+      verification.target !== (job.sam_target ?? job.config.target) ||
+      resolveMaskReview(
+        verification,
+        verification.analysis,
+        verification.target,
+        verification.attempt - 1,
+      ) !== "pass"
+    )
+      throw new AppError(
+        409,
+        "MASK_NOT_VERIFIED",
+        "The subject mask has not passed AI verification.",
+      );
+  }
   const registration = requiredMedia(media, registrationMediaId(job));
   const kind = job.config.workflow === "character_swap" ? "masked" : "prepared";
   validateReferenceVideo(registration, kind, job.config.duration);
@@ -125,6 +182,13 @@ export async function presentJob(row: StoredJob): Promise<Job> {
       frame: get(row.frame_id),
       anchor: get(row.anchor_id),
       masked: get(row.masked_id),
+      samRefinement: row.sam_refinement ?? null,
+      maskVerifications: row.sam_verifications ?? [],
+      maskComparison: get(
+        row.mask_comparison_id ??
+          row.sam_verifications?.at(-1)?.comparisonId ??
+          null,
+      ),
       result: get(row.result_id),
       error: row.error,
       createdAt: row.created_at,
@@ -187,6 +251,14 @@ export async function createJob(input: CreateJob) {
       updated_at: timestamp,
       sam_request_id: null,
       meta_response_id: null,
+      ...(input.workflow === "character_swap"
+        ? {
+            sam_attempt: 0,
+            sam_refinement_required: true,
+            sam_verifier_model_id: env.SAM_VERIFIER_MODEL,
+            sam_verifications: [],
+          }
+        : {}),
       provider_task_id: null,
       seedance_model_id: providerModelId(input.model),
       asset_id: null,
@@ -217,6 +289,173 @@ function appendEvent(job: StoredJob, stage: string, message: string) {
     stage,
     message,
     createdAt: new Date().toISOString(),
+  });
+}
+export async function completeSamRefinement(
+  id: string,
+  worker: string,
+  refinement: SamRefinement,
+) {
+  return workspace.update((state) => {
+    const job = state.jobs[id];
+    if (
+      !job ||
+      job.lease_owner !== worker ||
+      !job.lease_until ||
+      job.lease_until <= Date.now()
+    )
+      throw new AppError(
+        409,
+        "LEASE_ENDED",
+        "This worker no longer owns the take.",
+      );
+    if (
+      job.config.workflow !== "character_swap" ||
+      job.stage !== "prompt_refinement" ||
+      !job.sam_refinement_required ||
+      (job.sam_attempt ?? 0) !== 0 ||
+      refinement.model !== job.sam_verifier_model_id ||
+      refinement.preparedId !== job.prepared_id ||
+      refinement.originalTarget !== job.config.target ||
+      job.meta_response_id ||
+      job.sam_request_id ||
+      job.masked_id ||
+      job.asset_id ||
+      job.provider_task_id ||
+      job.submission_started_at
+    )
+      throw new AppError(
+        409,
+        "INVALID_STAGE",
+        "The take has moved past source-subject refinement.",
+      );
+    job.sam_refinement = refinement;
+    job.updated_at = new Date().toISOString();
+    if (job.cancel_requested || finished(job.status)) return;
+    if (!usableSamRefinement(refinement)) {
+      job.status = "needs_attention";
+      job.error =
+        samRefinementReasons[refinement.reason] +
+        " Clarify the source-subject description and start a new take. SAM was not submitted.";
+      appendEvent(job, "prompt_refinement", job.error);
+      return;
+    }
+    Object.assign(job, {
+      sam_target: refinement.description!,
+      status: "processing",
+      stage: "masking",
+      progress: 15,
+      next_run_at: Date.now(),
+    });
+    appendEvent(
+      job,
+      "masking",
+      "AI source-subject refinement prepared the SAM description: " +
+        JSON.stringify(job.sam_target),
+    );
+  });
+}
+export async function completeSamVerification(
+  id: string,
+  worker: string,
+  verification: SamVerification,
+) {
+  return workspace.update((state) => {
+    const job = state.jobs[id];
+    if (
+      !job ||
+      job.lease_owner !== worker ||
+      !job.lease_until ||
+      job.lease_until <= Date.now()
+    )
+      throw new AppError(
+        409,
+        "LEASE_ENDED",
+        "This worker no longer owns the take.",
+      );
+    if (
+      job.config.workflow !== "character_swap" ||
+      job.stage !== "mask_verification" ||
+      verification.attempt !== (job.sam_attempt ?? 0) + 1 ||
+      verification.model !== job.sam_verifier_model_id ||
+      verification.maskedId !== job.masked_id ||
+      verification.target !== (job.sam_target ?? job.config.target) ||
+      job.asset_id ||
+      job.provider_task_id ||
+      job.submission_started_at
+    )
+      throw new AppError(
+        409,
+        "INVALID_STAGE",
+        "The take has moved past this mask verification attempt.",
+      );
+    job.sam_verifications = [
+      ...(job.sam_verifications ?? []).filter(
+        (review) => review.attempt !== verification.attempt,
+      ),
+      verification,
+    ];
+    job.mask_comparison_id = verification.comparisonId;
+    job.updated_at = new Date().toISOString();
+    if (job.cancel_requested || finished(job.status)) return;
+    const action = resolveMaskReview(
+      verification,
+      verification.analysis,
+      verification.target,
+      verification.attempt - 1,
+    );
+    if (action === "retry") {
+      Object.assign(job, {
+        sam_attempt: 1,
+        sam_target: verification.description!.trim(),
+        masked_id: null,
+        meta_response_id: null,
+        status: "processing",
+        stage: "masking",
+        progress: 15,
+        next_run_at: Date.now(),
+      });
+      appendEvent(
+        job,
+        "masking",
+        "AI verification requested one SAM correction using: " +
+          JSON.stringify(job.sam_target),
+      );
+    } else if (action === "pass") {
+      Object.assign(job, {
+        status: job.config.prepareImage
+          ? "processing"
+          : job.config.reviewBeforeGeneration
+            ? "awaiting_approval"
+            : "queued",
+        stage: job.config.prepareImage
+          ? "image_preparation"
+          : job.config.reviewBeforeGeneration
+            ? "review"
+            : "registering",
+        progress: job.config.prepareImage ? 35 : 45,
+        next_run_at: Date.now(),
+      });
+      appendEvent(
+        job,
+        job.stage,
+        "AI mask verification passed. " +
+          (job.config.prepareImage
+            ? "Preparing the character in your scene."
+            : job.config.reviewBeforeGeneration
+              ? "Review the masked performance before generation."
+              : "Continuing to Virtual Portrait registration."),
+      );
+    } else {
+      job.status = "needs_attention";
+      job.error =
+        maskReviewReasons[verification.reason] +
+        (verification.attempt === 2
+          ? " The automatic SAM correction limit was reached."
+          : "") +
+        " Review the comparison and edit the subject description to start a new take.";
+      appendEvent(job, "mask_verification", job.error);
+    }
   });
 }
 export async function updateJob(id: string, patch: Partial<StoredJob>) {

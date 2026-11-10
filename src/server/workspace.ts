@@ -2,6 +2,10 @@ import path from "node:path";
 import { z } from "zod";
 import { env } from "@/env";
 import {
+  samRefinementSchema,
+  samVerificationSchema,
+} from "@/lib/sam-verification";
+import {
   savedJobConfigSchema,
   eventSchema,
   jobStatusSchema,
@@ -26,6 +30,7 @@ const storedJobSchema = z.object({
   frame_id: z.uuid().nullable(),
   anchor_id: z.uuid().nullable(),
   masked_id: z.uuid().nullable(),
+  mask_comparison_id: z.uuid().nullable().optional(),
   result_id: z.uuid().nullable(),
   status: jobStatusSchema,
   stage: z.string(),
@@ -36,6 +41,12 @@ const storedJobSchema = z.object({
   // Retain old fal IDs so existing takes are never silently resubmitted to Meta.
   sam_request_id: z.string().nullable(),
   meta_response_id: z.string().nullable().default(null),
+  sam_attempt: z.number().int().min(0).max(1).optional(),
+  sam_target: z.string().min(1).max(160).optional(),
+  sam_refinement_required: z.boolean().optional(),
+  sam_refinement: samRefinementSchema.optional(),
+  sam_verifier_model_id: z.string().min(1).optional(),
+  sam_verifications: z.array(samVerificationSchema).max(2).optional(),
   provider_task_id: z.string().nullable(),
   seedance_model_id: z.string().nullable().default(null),
   asset_id: z.string().nullable(),

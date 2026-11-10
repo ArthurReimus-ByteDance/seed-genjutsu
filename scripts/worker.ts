@@ -16,6 +16,9 @@ async function main() {
     claimJob,
     renewLease,
     completeProviderStage,
+    completeSamRefinement,
+    completeSamVerification,
+    hasUsableSamRefinement,
     validateSubmission,
   } = await import("../src/server/jobs");
   const { getMedia, localPath, providerUrl, saveMedia } =
@@ -33,6 +36,8 @@ async function main() {
   const { segmentVideo, samVideoDataUrl, samCheckpointStore, parseSavedMasks } =
     await import("../src/server/meta-sam");
   const { renderMaskedVideo } = await import("../src/server/sam-render");
+  const { refineSamPrompt, verifySamVideo } =
+    await import("../src/server/sam-review");
   const { AppError } = await import("../src/server/http");
   const { randomUUID } = await import("node:crypto");
   const { writeFile, rm } = await import("node:fs/promises");
@@ -110,11 +115,22 @@ async function main() {
       await completeProviderStage(job.id, id, recovered);
       return;
     }
-    const checkpoint =
-      swap && job.stage === "masking"
-        ? await samCheckpointStore(job.id).read((state) => state.response)
+    const samStore = samCheckpointStore(
+      job.id,
+      env.MEDIA_ROOT,
+      job.sam_attempt ?? 0,
+    );
+    const maskCheckpoint =
+      swap &&
+      ["prompt_refinement", "masking", "mask_verification"].includes(job.stage)
+        ? await samStore.read((state) => state)
         : null;
-    if (job.submission_started_at && !checkpoint)
+    const checkpoint = maskCheckpoint?.response ?? null;
+    if (
+      job.submission_started_at &&
+      !checkpoint &&
+      !(job.stage === "prompt_refinement" && maskCheckpoint?.refinement)
+    )
       throw new ProviderError(
         "A provider submission was interrupted before its result was saved. Review the provider dashboard before starting a new generation.",
         true,
@@ -174,11 +190,94 @@ async function main() {
       await transition(
         job.id,
         "processing",
-        "masking",
-        15,
-        "Source prepared. Tracking the selected subject with Meta SAM 3.1.",
+        job.sam_refinement_required ? "prompt_refinement" : "masking",
+        job.sam_refinement_required ? 10 : 15,
+        job.sam_refinement_required
+          ? "Source prepared. Refining the SAM subject description with DeepSeek."
+          : "Source prepared. Tracking the selected subject with Meta SAM 3.1.",
         id,
       );
+      return;
+    }
+    if (job.stage === "prompt_refinement") {
+      if (
+        !swap ||
+        !job.sam_refinement_required ||
+        (job.sam_attempt ?? 0) !== 0 ||
+        checkpoint ||
+        job.meta_response_id ||
+        job.sam_request_id ||
+        job.masked_id ||
+        job.asset_id ||
+        job.provider_task_id
+      )
+        throw new ProviderError(
+          "This take is not eligible for pre-SAM refinement. No SAM request was started.",
+          true,
+        );
+      if (maskCheckpoint?.refinementStartedAt && !maskCheckpoint.refinement)
+        throw new ProviderError(
+          "AI subject refinement was interrupted before its result was saved. Check ModelArk usage before starting another take. SAM was not submitted.",
+          true,
+        );
+      let refinement = maskCheckpoint?.refinement;
+      if (!refinement) {
+        if (!env.BYTEPLUS_API_KEY)
+          throw new AppError(
+            503,
+            "VERIFIER_SETUP",
+            "Connect your ModelArk API key for AI subject refinement before SAM masking.",
+          );
+        if (!env.META_API_KEY)
+          throw new AppError(
+            503,
+            "META_SETUP",
+            "Connect your Meta SAM API key before paid AI subject refinement and masking.",
+          );
+        const prepared = await getMedia(job.prepared_id!);
+        if (
+          prepared.kind !== "prepared" ||
+          !prepared.mime.startsWith("video/") ||
+          prepared.bytes <= 0 ||
+          prepared.bytes > 50_000_000
+        )
+          throw new ProviderError(
+            "The source video for AI subject refinement is invalid or exceeds the 50 MB input limit.",
+          );
+        const url = await providerUrl(prepared);
+        signal.throwIfAborted();
+        await markSubmission(job.id);
+        await samStore.update((state) => {
+          if (state.refinementStartedAt)
+            throw new ProviderError(
+              "This source-subject refinement has already been submitted.",
+              true,
+            );
+          state.refinementStartedAt = new Date().toISOString();
+        });
+        const result = await refineSamPrompt(
+          {
+            model: job.sam_verifier_model_id!,
+            videoUrl: url,
+            originalTarget: config.target,
+          },
+          signal,
+        );
+        refinement = {
+          ...result.refinement,
+          model: job.sam_verifier_model_id!,
+          originalTarget: config.target,
+          preparedId: prepared.id,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          refinedAt: new Date().toISOString(),
+        };
+        await samStore.update((state) => {
+          state.refinement = refinement;
+        });
+      }
+      await clearSubmission(job.id);
+      await completeSamRefinement(job.id, id, refinement);
       return;
     }
     if (job.stage === "masking") {
@@ -188,13 +287,52 @@ async function main() {
           "INVALID_STAGE",
           "This workflow does not use subject masking.",
         );
-      if (!job.masked_id) {
+      if (!checkpoint && !env.BYTEPLUS_API_KEY)
+        throw new AppError(
+          503,
+          "VERIFIER_SETUP",
+          "Connect your ModelArk API key before SAM masking and AI verification.",
+        );
+      if (
+        !checkpoint &&
+        job.sam_refinement_required &&
+        !hasUsableSamRefinement(job)
+      ) {
+        if ((job.sam_attempt ?? 0) !== 0)
+          throw new ProviderError(
+            "The initial source-subject refinement is missing or invalid. No corrective SAM request was started.",
+            true,
+          );
+        await transition(
+          job.id,
+          "processing",
+          "prompt_refinement",
+          10,
+          "Recovering AI subject refinement before the first SAM request.",
+          id,
+        );
+        return;
+      }
+      await updateJob(job.id, {
+        sam_verifier_model_id:
+          job.sam_verifier_model_id ?? env.SAM_VERIFIER_MODEL,
+      });
+      if (
+        !maskCheckpoint?.maskedId ||
+        !maskCheckpoint.comparisonId ||
+        !maskCheckpoint.analysis
+      ) {
         if (job.sam_request_id)
           throw new ProviderError(
             "This take has an earlier fal.ai submission. Review it in fal.ai before creating a new Meta SAM take.",
             true,
           );
         let saved = checkpoint;
+        if (!saved && job.masked_id)
+          throw new ProviderError(
+            "The saved mask has no completed SAM checkpoint for AI verification. Review it before starting a new take.",
+            true,
+          );
         if (!saved && job.meta_response_id)
           throw new ProviderError(
             "This Meta response has no completed local mask checkpoint. Check Meta usage before starting another take.",
@@ -215,7 +353,7 @@ async function main() {
           try {
             const { result, responseId } = await segmentVideo(
               url,
-              config.target,
+              job.sam_target ?? config.target,
               signal,
               {
                 onResponseId: async (responseId) => {
@@ -224,7 +362,7 @@ async function main() {
               },
             );
             saved = { responseId, output: result.rawOutput };
-            await samCheckpointStore(job.id).update((state) => {
+            await samStore.update((state) => {
               state.response = saved;
             });
           } catch (error) {
@@ -249,6 +387,7 @@ async function main() {
           await localPath(prepared),
           parseSavedMasks(saved.output),
           signal,
+          true,
         );
         try {
           const masked = await saveMedia({
@@ -258,26 +397,133 @@ async function main() {
             data: rendered.data,
             ...rendered.meta,
           });
-          await updateJob(job.id, { masked_id: masked.id });
+          if (!rendered.comparison)
+            throw new ProviderError(
+              "The AI verification comparison video is missing.",
+            );
+          const comparison = await saveMedia({
+            kind: "verification",
+            name: "Source and SAM mask comparison",
+            mime: "video/mp4",
+            data: rendered.comparison.data,
+            ...rendered.comparison.meta,
+          });
+          await samStore.update((state) => {
+            state.maskedId = masked.id;
+            state.comparisonId = comparison.id;
+            state.analysis = rendered.analysis;
+          });
         } finally {
           await rm(rendered.dir, { recursive: true, force: true });
         }
       }
-      if (config.prepareImage)
+      const renderedCheckpoint = await samStore.read((state) => state);
+      await updateJob(job.id, {
+        masked_id: renderedCheckpoint.maskedId,
+        mask_comparison_id: renderedCheckpoint.comparisonId,
+        meta_response_id: renderedCheckpoint.response?.responseId,
+        submission_started_at: null,
+      });
+      await transition(
+        job.id,
+        "processing",
+        "mask_verification",
+        30,
+        "Checking source and mask tracking with the AI video verifier.",
+        id,
+      );
+      return;
+    }
+    if (job.stage === "mask_verification") {
+      if (!swap)
+        throw new AppError(
+          400,
+          "INVALID_STAGE",
+          "This workflow does not use mask verification.",
+        );
+      if (!maskCheckpoint?.response)
+        throw new ProviderError(
+          "The completed SAM checkpoint is missing. No automatic SAM retry was started.",
+          true,
+        );
+      if (maskCheckpoint.verificationStartedAt && !maskCheckpoint.verification)
+        throw new ProviderError(
+          "An AI mask verification request was interrupted before its decision was saved. Check ModelArk usage before starting a new take.",
+          true,
+        );
+      if (
+        !maskCheckpoint.maskedId ||
+        !maskCheckpoint.comparisonId ||
+        !maskCheckpoint.analysis
+      ) {
         await transition(
           job.id,
           "processing",
-          "image_preparation",
-          35,
-          "Masked video ready. Preparing the character in your scene.",
+          "masking",
+          25,
+          "Recovering the comparison from the completed SAM checkpoint.",
           id,
         );
-      else
-        await finishPreparation(
-          job,
-          "Masked performance is ready. Review it before video generation.",
-          id,
+        return;
+      }
+      const model = job.sam_verifier_model_id ?? env.SAM_VERIFIER_MODEL;
+      await updateJob(job.id, {
+        sam_verifier_model_id: model,
+        masked_id: maskCheckpoint.maskedId,
+        mask_comparison_id: maskCheckpoint.comparisonId,
+      });
+      let verification = maskCheckpoint.verification;
+      if (!verification) {
+        if (!env.BYTEPLUS_API_KEY)
+          throw new AppError(
+            503,
+            "VERIFIER_SETUP",
+            "Connect your ModelArk API key for AI mask verification. The completed SAM result is saved.",
+          );
+        const comparison = await getMedia(maskCheckpoint.comparisonId);
+        if (comparison.kind !== "verification" || comparison.bytes > 50_000_000)
+          throw new ProviderError(
+            "The AI mask comparison is invalid or exceeds the video input limit.",
+          );
+        const url = await providerUrl(comparison);
+        signal.throwIfAborted();
+        await markSubmission(job.id);
+        await samStore.update((state) => {
+          if (state.verificationStartedAt)
+            throw new ProviderError(
+              "This mask verification attempt has already been submitted.",
+              true,
+            );
+          state.verificationStartedAt = new Date().toISOString();
+        });
+        const result = await verifySamVideo(
+          {
+            model,
+            videoUrl: url,
+            originalTarget: config.target,
+            target: job.sam_target ?? config.target,
+            analysis: maskCheckpoint.analysis,
+          },
+          signal,
         );
+        verification = {
+          ...result.review,
+          model,
+          attempt: (job.sam_attempt ?? 0) + 1,
+          target: job.sam_target ?? config.target,
+          maskedId: maskCheckpoint.maskedId,
+          comparisonId: maskCheckpoint.comparisonId,
+          analysis: maskCheckpoint.analysis,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          reviewedAt: new Date().toISOString(),
+        };
+        await samStore.update((state) => {
+          state.verification = verification;
+        });
+      }
+      await clearSubmission(job.id);
+      await completeSamVerification(job.id, id, verification);
       return;
     }
     if (job.stage === "image_preparation") {
@@ -318,7 +564,7 @@ async function main() {
           providerModel: env.SEEDREAM_MODEL,
           characterUrl,
           frameUrl,
-          target: config.target,
+          target: job.sam_target ?? config.target,
           prompt: config.prompt,
         }),
         signal,
@@ -452,7 +698,7 @@ async function main() {
           videoUri,
           characterUrl: await providerUrl(character),
           anchorUrl: anchor ? await providerUrl(anchor) : undefined,
-          target: config.target,
+          target: job.sam_target ?? config.target,
           prompt: config.prompt,
           resolution: config.resolution,
           preserveAudio: config.preserveAudio,
@@ -582,7 +828,8 @@ async function main() {
         } else {
           const ambiguous =
             (error instanceof ProviderError && error.ambiguous) ||
-            !!latest.submission_started_at;
+            !!latest.submission_started_at ||
+            ["prompt_refinement", "mask_verification"].includes(latest.stage);
           const message =
             error instanceof AppError || error instanceof ProviderError
               ? error.message

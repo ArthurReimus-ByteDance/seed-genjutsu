@@ -18,7 +18,8 @@ const { jobRecord, updateJob } = await import("../src/server/jobs");
 const { localPath, getMedia } = await import("../src/server/storage");
 const { probe } = await import("../src/server/media");
 const { samCheckpointStore } = await import("../src/server/meta-sam");
-const { maskLine } = await import("./fixtures/meta-sam");
+const { maskLine, refinementFixture, verificationFixture } =
+  await import("./fixtures/meta-sam");
 const { jobSchema, uploadSchema } = await import("../src/lib/schemas");
 const base = process.argv[2] ?? env.APP_URL;
 const checks: string[] = [];
@@ -351,8 +352,8 @@ try {
     jobSchema.parse((await json("/jobs", 202, input)).job);
   const job = await create();
   await json("/jobs/" + job.id + "/approve", 409, {});
-  const failed = await until(job.id, "failed");
-  assert.match(failed.error ?? "", /Meta Model API key/);
+  const failed = await until(job.id, "needs_attention");
+  assert.match(failed.error ?? "", /ModelArk API key/);
   assert.ok(failed.frame);
   const stored = await jobRecord(job.id);
   assert.equal(failed.config.model, "seedance-2");
@@ -396,8 +397,10 @@ try {
     lease_owner: "stopped-worker",
     lease_until: Date.now() - 1,
   });
-  const recoveredReview = await until(recovered.id, "awaiting_approval");
+  const recoveredReview = await until(recovered.id, "needs_attention");
   assert.ok(recoveredReview.masked);
+  assert.ok(recoveredReview.maskComparison);
+  assert.match(recoveredReview.error ?? "", /AI mask verification/);
   assert.notEqual(recoveredReview.masked.id, stored.prepared_id);
   assert.equal((await jobRecord(recovered.id)).submission_started_at, null);
   assert.equal(
@@ -410,9 +413,10 @@ try {
     (await json("/jobs/" + recovered.id, 200)).job.masked.id,
     recoveredReview.masked.id,
   );
-  await json("/jobs/" + recovered.id + "/cancel", 200, {});
+  await request("/media/" + recoveredReview.maskComparison.id, 200);
+  await json("/jobs/" + recovered.id + "/approve", 409, {});
   checks.push(
-    "Completed synthetic SAM checkpoint recovered without a provider POST, rendered a real masked MP4 and persisted the review gate",
+    "Completed synthetic SAM checkpoint rendered masked and comparison MP4s; missing verifier access blocked approval without a provider POST",
   );
   const cancellable = jobSchema.parse(
     (await json("/jobs", 202, { ...input, model: "seedance-2.5" })).job,
@@ -428,7 +432,16 @@ try {
   await updateJob(review.id, {
     status: "awaiting_approval",
     stage: "review",
+    prepared_id: stored.prepared_id,
+    sam_target: input.target,
+    sam_refinement: refinementFixture(stored.prepared_id!),
     masked_id: recoveredReview.masked.id,
+    sam_verifications: [
+      verificationFixture(
+        recoveredReview.masked.id,
+        recoveredReview.maskComparison.id,
+      ),
+    ],
     lease_owner: null,
     lease_until: null,
   });
@@ -504,7 +517,7 @@ try {
     "seedance-2.5",
   );
   const disk = JSON.parse(await readFile(workspace.file, "utf8"));
-  assert.equal(disk.jobs[job.id].status, "failed");
+  assert.equal(disk.jobs[job.id].status, "needs_attention");
   assert.ok(disk.media[video.id]);
   checks.push(
     "A fresh cookie-free client reads saved history; uploads and state are present in workspace.json",
