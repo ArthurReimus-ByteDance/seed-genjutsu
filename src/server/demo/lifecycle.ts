@@ -3,8 +3,9 @@ export type DemoRecord = {
   job: Job;
   scenario: "success" | "failure";
   approvedAt: string | null;
-  masked: Upload;
-  anchor: Upload;
+  prepared: Upload | null;
+  masked: Upload | null;
+  anchor: Upload | null;
   result: Upload;
 };
 export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
@@ -19,6 +20,8 @@ export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
     ].includes(job.status)
   )
     return record;
+  const characterSwap =
+    (job.config.workflow ?? "character_swap") === "character_swap";
   const createdAt = Date.parse(job.createdAt);
   const readyAt = createdAt + 6500;
   let generationStartedAt = record.approvedAt
@@ -36,17 +39,21 @@ export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
       stage = "review";
       status = "awaiting_approval";
       progress = 45;
-      message = "Your sample references are ready for review.";
-    } else if (elapsed >= 3500 && job.config.prepareImage) {
+      message = characterSwap
+        ? "Your sample references are ready for review."
+        : "Your original prepared clip is ready for review. Generation is simulated.";
+    } else if (characterSwap && elapsed >= 3500 && job.config.prepareImage) {
       stage = "image_preparation";
       status = "processing";
       progress = 35;
       message = "Preparing the scene look (simulated).";
     } else if (elapsed >= 1500) {
-      stage = "masking";
+      stage = characterSwap ? "masking" : "trimming";
       status = "processing";
       progress = 20;
-      message = "Tracking the subject (simulated).";
+      message = characterSwap
+        ? "Tracking the subject (simulated)."
+        : "Trimming and normalizing the original clip. SAM masking is skipped.";
     }
   } else {
     if (elapsed >= 10000) {
@@ -55,13 +62,13 @@ export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
         status = "failed";
         progress = 75;
         message =
-          "The sample provider could not finish this take. Your inputs are saved. Try a new take to continue.";
+          "The sample provider could not finish this simulated take. Your inputs are saved. Try a new take to continue.";
       } else {
         stage = "complete";
         status = "succeeded";
         progress = 100;
         message =
-          "Your simulated result is ready. Compare it with the original and download the sample.";
+          "Your simulated prerecorded result is ready. This fixed sample does not demonstrate the requested edit or model output quality.";
       }
     } else if (elapsed >= 4500) {
       stage = "generating";
@@ -72,7 +79,8 @@ export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
       stage = "asset_review";
       status = "processing";
       progress = 60;
-      message = "Checking the video reference (simulated).";
+      message =
+        "Checking Virtual Portrait video eligibility (simulated). Active status does not verify real-person authorization or media rights. This preview provides no model-quality evidence.";
     } else {
       stage = "registering";
       status = "processing";
@@ -92,9 +100,13 @@ export function advanceDemo(record: DemoRecord, now = Date.now()): DemoRecord {
       status,
       progress,
       updatedAt,
-      masked: referencesReady ? record.masked : job.masked,
+      prepared:
+        !characterSwap && referencesReady ? record.prepared : job.prepared,
+      masked: characterSwap && referencesReady ? record.masked : job.masked,
       anchor:
-        job.config.prepareImage && referencesReady ? record.anchor : job.anchor,
+        characterSwap && job.config.prepareImage && referencesReady
+          ? record.anchor
+          : job.anchor,
       result: status === "succeeded" ? record.result : null,
       error: status === "failed" ? message : null,
       events: [

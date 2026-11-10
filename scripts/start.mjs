@@ -1,13 +1,9 @@
-import nextEnv from "@next/env";
+import { loadEnvironment } from "./environment.mjs";
 import { access, cp, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-process.env.NODE_ENV ??= "production";
-// Load before standalone changes cwd. This also expands .env.local references.
-nextEnv.loadEnvConfig(process.cwd());
-// Standalone changes cwd; keep its workspace aligned with the project worker.
-process.env.MEDIA_ROOT = path.resolve(process.env.MEDIA_ROOT || ".data");
+loadEnvironment({ defaultMode: "production" });
 process.env.PORT ??= "3107";
 process.env.HOSTNAME = "127.0.0.1";
 const root = path.resolve(".next/standalone");

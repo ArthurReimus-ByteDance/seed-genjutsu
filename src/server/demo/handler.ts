@@ -7,7 +7,16 @@ import { z } from "zod";
 import { DOWNLOAD_PREFIX, SEEDREAM_NAME } from "@/lib/branding";
 import { DEFAULT_VIDEO_MODEL, videoModels } from "@/lib/video-models";
 import { createJobSchema, type Job } from "@/lib/schemas";
-import { AppError, ok, readJson, route } from "@/server/http";
+import {
+  effectiveDirection,
+  workflowIds,
+  workflows,
+  stylePresetIds,
+  stylePresets,
+  STYLE_PRESET_REVISION,
+} from "@/lib/workflows";
+import { AppError, ok, readJson, readFormData, route } from "@/server/http";
+import { fileResponse } from "@/server/media-response";
 import { frame, normalizeImage, probe, trimVideo } from "@/server/media";
 import {
   withDemo,
@@ -19,6 +28,9 @@ import {
   demoRoot,
   type DemoStore,
   requireDemoEnabled,
+  resolveDemoInputs,
+  presentDemoJob,
+  reviewDemoMedia,
 } from "./store";
 import { demoEnhancement } from "./prompt-enhancement";
 const run = promisify(execFile);
@@ -32,9 +44,7 @@ async function upload(request: Request, store: DemoStore) {
       "PREVIEW_LIMIT",
       "This preview has reached its upload limit. Use an existing reference.",
     );
-  if (Number(request.headers.get("content-length") ?? 0) > 105 * 1024 * 1024)
-    throw new AppError(413, "TOO_LARGE", "Keep videos under 100 MB.");
-  const form = await request.formData();
+  const form = await readFormData(request);
   const kind = z.enum(["video", "character"]).parse(form.get("kind"));
   const file = form.get("file");
   if (!(file instanceof File) || !file.size)
@@ -107,6 +117,15 @@ export async function demoHandler(request: Request, parts: string[]) {
     return withDemo(async (store) => {
       if (method === "GET" && endpoint === "capabilities")
         return ok({
+          workflows: workflowIds.map((id) => ({
+            id,
+            label: workflows[id].label,
+            model: id === "character_swap" ? null : "seedance-2.5",
+            requiresSam: id === "character_swap",
+            maxImageReferences: id === "character_swap" ? 1 : 30,
+            configured: true,
+            qualityValidated: false,
+          })),
           video: true,
           image: true,
           storage: true,
@@ -120,6 +139,23 @@ export async function demoHandler(request: Request, parts: string[]) {
           missing: [],
           workerSeenAt: new Date().toISOString(),
         });
+      if (method === "GET" && endpoint === "presets") {
+        const workflow = new URL(request.url).searchParams.get("workflow");
+        if (workflow && workflow !== "restyle")
+          throw new AppError(
+            400,
+            "INVALID_WORKFLOW",
+            "Style presets are available for the restyle workflow.",
+          );
+        return ok({
+          presets: stylePresetIds.map((id) => ({
+            id,
+            revision: STYLE_PRESET_REVISION,
+            ...stylePresets[id],
+            qualityValidated: false,
+          })),
+        });
+      }
       if (method === "POST" && endpoint === "samples")
         return ok(await sampleReferences(store));
       if (method === "POST" && endpoint === "uploads")
@@ -130,7 +166,6 @@ export async function demoHandler(request: Request, parts: string[]) {
       if (method === "GET" && parts[0] === "media" && parts.length === 2) {
         z.uuid().parse(parts[1]);
         const item = media(store, parts[1]);
-        const bytes = await readFile(item.file);
         const headers: Record<string, string> = {
           "Content-Type": item.mime,
           "Cache-Control": "private, no-store",
@@ -141,39 +176,14 @@ export async function demoHandler(request: Request, parts: string[]) {
             'attachment; filename="' +
             item.name.replace(/[^a-zA-Z0-9._-]/g, "_") +
             '"';
-        const range = request.headers.get("range");
-        if (range) {
-          const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-          if (!match)
-            throw new AppError(416, "INVALID_RANGE", "Invalid video range.");
-          const start = match[1]
-            ? Number(match[1])
-            : Math.max(0, bytes.length - Number(match[2]));
-          const end =
-            match[1] && match[2]
-              ? Math.min(Number(match[2]), bytes.length - 1)
-              : bytes.length - 1;
-          if (start > end || start >= bytes.length)
-            return new Response(null, {
-              status: 416,
-              headers: { "Content-Range": "bytes */" + bytes.length },
-            });
-          return new Response(new Uint8Array(bytes.subarray(start, end + 1)), {
-            status: 206,
-            headers: {
-              ...headers,
-              "Content-Range":
-                "bytes " + start + "-" + end + "/" + bytes.length,
-              "Content-Length": String(end - start + 1),
-            },
-          });
-        }
-        return new Response(new Uint8Array(bytes), {
-          headers: { ...headers, "Content-Length": String(bytes.length) },
-        });
+        return fileResponse(request, item.file, headers);
       }
       if (method === "GET" && endpoint === "jobs")
-        return ok({ jobs: store.jobs.map((record) => record.job).reverse() });
+        return ok({
+          jobs: store.jobs
+            .map((record) => presentDemoJob(store, record))
+            .reverse(),
+        });
       if (method === "POST" && endpoint === "jobs") {
         if (store.jobs.length >= 30)
           throw new AppError(
@@ -182,23 +192,11 @@ export async function demoHandler(request: Request, parts: string[]) {
             "This preview has reached its take limit.",
           );
         const config = createJobSchema.parse(await readJson(request));
-        const source = media(store, config.sourceId),
-          character = media(store, config.characterId);
-        if (source.kind !== "video" || character.kind !== "character")
-          throw new AppError(
-            400,
-            "INVALID_REFERENCE",
-            "Choose a video and a character image.",
-          );
-        if (
-          !source.duration ||
-          config.start + config.duration > source.duration + 0.06
-        )
-          throw new AppError(
-            400,
-            "INVALID_TRIM",
-            "The selected range extends past your clip.",
-          );
+        const { source, character, references } = resolveDemoInputs(
+          store,
+          config,
+        );
+        const characterSwap = config.workflow === "character_swap";
         const scenario = z
           .enum(["success", "failure"])
           .parse(request.headers.get("X-Recast-Scenario") ?? "success");
@@ -244,7 +242,11 @@ export async function demoHandler(request: Request, parts: string[]) {
         const resultBytes = await readFile(resultFile);
         const result = await saveDemoMedia(store, {
           kind: "result",
-          name: DOWNLOAD_PREFIX + "-simulated-" + jobId.slice(0, 8) + ".mp4",
+          name:
+            DOWNLOAD_PREFIX +
+            "-simulated-prerecorded-" +
+            jobId.slice(0, 8) +
+            ".mp4",
           mime: "video/mp4",
           file: resultFile,
           bytes: resultBytes.length,
@@ -252,14 +254,14 @@ export async function demoHandler(request: Request, parts: string[]) {
           duration: resultMeta.duration,
           posterUrl: "/samples/character.jpg",
         });
-        const prepared = await trimVideo(
+        const trimmed = await trimVideo(
           source.file,
           config.start,
           config.duration,
         );
-        let masked, firstFrame;
+        let reviewVideo, firstFrame;
         try {
-          const image = await frame(prepared.file);
+          const image = await frame(trimmed.file);
           firstFrame = await saveDemoMedia(store, {
             kind: "frame",
             name: "Original first frame.jpg",
@@ -270,40 +272,46 @@ export async function demoHandler(request: Request, parts: string[]) {
             height: image.height,
             duration: null,
           });
-          masked = await saveDemoMedia(store, {
-            kind: "masked",
-            name: "Simulated subject preview.mp4",
+          reviewVideo = await saveDemoMedia(store, {
+            kind: characterSwap ? "masked" : "prepared",
+            name: characterSwap
+              ? "Simulated subject preview.mp4"
+              : "Original prepared clip.mp4",
             mime: "video/mp4",
-            data: prepared.data,
-            bytes: prepared.data.length,
-            ...prepared.meta,
-            duration: prepared.meta.duration,
+            data: trimmed.data,
+            bytes: trimmed.data.length,
+            ...trimmed.meta,
+            duration: trimmed.meta.duration,
             posterUrl: firstFrame.url,
           });
         } finally {
-          await rm(prepared.dir, { recursive: true, force: true });
+          await rm(trimmed.dir, { recursive: true, force: true });
         }
-        const anchor = await saveDemoMedia(store, {
-          kind: "anchor",
-          name: "Simulated scene look.jpg",
-          mime: "image/jpeg",
-          bytes: 180000,
-          width: 1280,
-          height: 720,
-          duration: null,
-          file: path.join(process.cwd(), "public/samples/character.jpg"),
-        });
+        const anchor = characterSwap
+          ? await saveDemoMedia(store, {
+              kind: "anchor",
+              name: "Simulated scene look.jpg",
+              mime: "image/jpeg",
+              bytes: 180000,
+              width: 1280,
+              height: 720,
+              duration: null,
+              file: path.join(process.cwd(), "public/samples/character.jpg"),
+            })
+          : null;
         const now = new Date().toISOString();
         const job: Job = {
           id: jobId,
-          name: config.prompt.slice(0, 60),
+          name: effectiveDirection(config).slice(0, 60),
           prompt: config.prompt,
           config,
           status: "queued",
           stage: "queued",
           progress: 5,
           source: publicDemoMedia(source),
-          character: publicDemoMedia(character),
+          character: character ? publicDemoMedia(character) : null,
+          references,
+          prepared: null,
           frame: publicDemoMedia(firstFrame),
           masked: null,
           anchor: null,
@@ -315,7 +323,8 @@ export async function demoHandler(request: Request, parts: string[]) {
             {
               id: 1,
               stage: "queued",
-              message: "Preview take created. All model steps are simulated.",
+              message:
+                "Preview take created. All model steps are simulated; outputs use a fixed prerecorded sample. This preview does not validate real-person authorization, media rights, provider eligibility or model output quality.",
               createdAt: now,
             },
           ],
@@ -324,8 +333,9 @@ export async function demoHandler(request: Request, parts: string[]) {
           job,
           scenario,
           approvedAt: null,
-          masked: publicDemoMedia(masked),
-          anchor: publicDemoMedia(anchor),
+          prepared: characterSwap ? null : publicDemoMedia(reviewVideo),
+          masked: characterSwap ? publicDemoMedia(reviewVideo) : null,
+          anchor: anchor ? publicDemoMedia(anchor) : null,
           result: publicDemoMedia(result),
         });
         return ok({ job }, 202);
@@ -334,7 +344,7 @@ export async function demoHandler(request: Request, parts: string[]) {
         z.uuid().parse(parts[1]);
         const record = demoJob(store, parts[1]);
         if (method === "GET" && parts.length === 2)
-          return ok({ job: record.job });
+          return ok({ job: presentDemoJob(store, record) });
         if (method === "POST" && parts[2] === "approve") {
           if (record.job.status !== "awaiting_approval")
             throw new AppError(
@@ -342,6 +352,7 @@ export async function demoHandler(request: Request, parts: string[]) {
               "NOT_AWAITING_APPROVAL",
               "This take is not waiting for review.",
             );
+          reviewDemoMedia(store, record);
           record.approvedAt = new Date().toISOString();
           record.job = {
             ...record.job,
@@ -360,7 +371,7 @@ export async function demoHandler(request: Request, parts: string[]) {
               },
             ],
           };
-          return ok({ job: record.job });
+          return ok({ job: presentDemoJob(store, record) });
         }
         if (method === "POST" && parts[2] === "cancel") {
           if (["succeeded", "failed", "cancelled"].includes(record.job.status))

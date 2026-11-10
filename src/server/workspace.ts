@@ -21,7 +21,7 @@ const storedJobSchema = z.object({
   prompt: z.string(),
   config: savedJobConfigSchema,
   source_id: z.uuid(),
-  character_id: z.uuid(),
+  character_id: z.uuid().nullable().default(null),
   prepared_id: z.uuid().nullable(),
   frame_id: z.uuid().nullable(),
   anchor_id: z.uuid().nullable(),

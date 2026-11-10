@@ -1,15 +1,95 @@
 import { randomUUID } from "node:crypto";
-import { workspace, type StoredJob } from "./workspace";
-import { getMedia, publicUpload } from "./storage";
+import { workspace, type StoredJob, type StoredMedia } from "./workspace";
+import { publicUpload } from "./storage";
 import { AppError } from "./http";
 import { env } from "@/env";
-import { type CreateJob, type Job } from "@/lib/schemas";
+import { createJobSchema, type CreateJob, type Job } from "@/lib/schemas";
+import { effectiveDirection, registrationMediaId } from "@/lib/workflows";
 import { providerModelId } from "./video-models";
+import {
+  validateSourceVideo,
+  validateReferenceImage,
+  validateReferenceVideo,
+} from "./reference-media";
 const runnable = (status: string) =>
   ["queued", "processing", "generating"].includes(status);
 const finished = (status: string) =>
   ["succeeded", "failed", "cancelled", "needs_attention"].includes(status);
 
+function requiredMedia(media: Record<string, StoredMedia>, id: string | null) {
+  if (!id || !media[id])
+    throw new AppError(
+      404,
+      "NOT_FOUND",
+      "A required media reference is missing.",
+    );
+  return media[id];
+}
+function resolveInputs(media: Record<string, StoredMedia>, config: CreateJob) {
+  const source = requiredMedia(media, config.sourceId);
+  validateSourceVideo(source, config.start, config.duration);
+  const character = config.characterId
+    ? requiredMedia(media, config.characterId)
+    : null;
+  if (character) validateReferenceImage(character, "character");
+  const references = config.references.map((reference) => {
+    const image = requiredMedia(media, reference.mediaId);
+    validateReferenceImage(image, "character");
+    return { id: reference.id, role: reference.role, media: image };
+  });
+  return { source, character, references };
+}
+function reviewMedia(
+  media: Record<string, StoredMedia>,
+  job: StoredJob,
+  requireAnchor = true,
+) {
+  const registration = requiredMedia(media, registrationMediaId(job));
+  const kind = job.config.workflow === "character_swap" ? "masked" : "prepared";
+  validateReferenceVideo(registration, kind, job.config.duration);
+  const anchor = job.anchor_id ? requiredMedia(media, job.anchor_id) : null;
+  if (requireAnchor && job.config.prepareImage && !anchor)
+    throw new AppError(
+      400,
+      "MISSING_ANCHOR",
+      "The prepared scene image is missing.",
+    );
+  if (anchor) validateReferenceImage(anchor, "anchor");
+  return { registration, anchor };
+}
+export async function validateSubmission(id: string, requireAnchor = true) {
+  return workspace.read((state) => {
+    const job = state.jobs[id];
+    if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
+    const config = createJobSchema.parse(job.config);
+    if (
+      job.source_id !== config.sourceId ||
+      job.character_id !== (config.characterId ?? null)
+    )
+      throw new AppError(
+        400,
+        "INVALID_INPUT",
+        "The saved media references do not match this take.",
+      );
+    const inputs = resolveInputs(state.media, config);
+    const { registration, anchor } = reviewMedia(
+      state.media,
+      job,
+      requireAnchor,
+    );
+    const images =
+      inputs.references.length +
+      (inputs.character ? 1 : 0) +
+      (anchor && config.workflow === "character_swap" ? 1 : 0);
+    if (images > (config.model === "seedance-2.5" ? 30 : 9))
+      throw new AppError(
+        400,
+        "REFERENCE_LIMIT",
+        "Too many images for this model.",
+      );
+    return { ...inputs, registration, anchor };
+  });
+}
 export async function jobRecord(id: string) {
   return workspace.read((state) => {
     const job = state.jobs[id];
@@ -23,8 +103,13 @@ export async function presentJob(row: StoredJob): Promise<Job> {
       id && state.media[id] ? publicUpload(state.media[id]) : null;
     const source = get(row.source_id),
       character = get(row.character_id);
-    if (!source || !character)
+    if (!source || (row.config.workflow === "character_swap" && !character))
       throw new Error("A saved take is missing its references.");
+    const references = row.config.references.map((reference) => {
+      const media = get(reference.mediaId);
+      if (!media) throw new Error("A saved take is missing its references.");
+      return { id: reference.id, role: reference.role, media };
+    });
     return {
       id: row.id,
       name: row.name,
@@ -35,6 +120,8 @@ export async function presentJob(row: StoredJob): Promise<Job> {
       config: row.config,
       source,
       character,
+      references,
+      prepared: get(row.prepared_id),
       frame: get(row.frame_id),
       anchor: get(row.anchor_id),
       masked: get(row.masked_id),
@@ -55,20 +142,7 @@ export async function listJobs() {
   return Promise.all(rows.map(presentJob));
 }
 export async function createJob(input: CreateJob) {
-  const source = await getMedia(input.sourceId),
-    character = await getMedia(input.characterId);
-  if (source.kind !== "video" || character.kind !== "character")
-    throw new AppError(
-      400,
-      "INVALID_INPUT",
-      "Choose a source video and a character image.",
-    );
-  if (!source.duration || input.start + input.duration > source.duration + 0.06)
-    throw new AppError(
-      400,
-      "INVALID_TRIM",
-      "The selected range extends past the video.",
-    );
+  input = createJobSchema.parse(input);
   if (input.prepareImage && !env.SEEDREAM_MODEL)
     throw new AppError(
       503,
@@ -76,6 +150,7 @@ export async function createJob(input: CreateJob) {
       "The Seedream image model is not connected yet. Disable scene preparation or configure its verified model ID.",
     );
   const job = await workspace.update((state) => {
+    const { source, character } = resolveInputs(state.media, input);
     const now = Date.now(),
       rows = Object.values(state.jobs);
     if (
@@ -94,11 +169,11 @@ export async function createJob(input: CreateJob) {
       timestamp = new Date(now).toISOString();
     const job: StoredJob = {
       id,
-      name: input.prompt.slice(0, 60),
+      name: effectiveDirection(input).slice(0, 60),
       prompt: input.prompt,
       config: input,
       source_id: source.id,
-      character_id: character.id,
+      character_id: character?.id ?? null,
       prepared_id: null,
       frame_id: null,
       anchor_id: null,
@@ -163,10 +238,23 @@ export async function transition(
   stage: string,
   progress: number,
   message: string,
+  worker?: string,
 ) {
   return workspace.update((state) => {
     const job = state.jobs[id];
-    if (job.cancel_requested) return;
+    if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
+    if (
+      worker &&
+      (job.lease_owner !== worker ||
+        !job.lease_until ||
+        job.lease_until <= Date.now())
+    )
+      throw new AppError(
+        409,
+        "LEASE_ENDED",
+        "This worker no longer owns the take.",
+      );
+    if (job.cancel_requested || finished(job.status)) return;
     Object.assign(job, {
       status,
       stage,
@@ -177,35 +265,121 @@ export async function transition(
     appendEvent(job, stage, message);
   });
 }
+export async function completeProviderStage(
+  id: string,
+  worker: string,
+  result: { kind: "asset" | "task" | "result"; id: string },
+) {
+  return workspace.update((state) => {
+    const job = state.jobs[id];
+    if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
+    if (
+      job.lease_owner !== worker ||
+      !job.lease_until ||
+      job.lease_until <= Date.now()
+    )
+      throw new AppError(
+        409,
+        "LEASE_ENDED",
+        "This worker no longer owns the take.",
+      );
+    const completion = {
+      asset: {
+        field: "asset_id",
+        previous: "registering",
+        stage: "asset_review",
+        status: "processing",
+        progress: 55,
+        message: "Reference uploaded. Waiting for Virtual Portrait processing.",
+      },
+      task: {
+        field: "provider_task_id",
+        previous: "submitting",
+        stage: "generating",
+        status: "generating",
+        progress: 75,
+        message:
+          "Your video task is submitted. Waiting for the transformation.",
+      },
+      result: {
+        field: "result_id",
+        previous: "generating",
+        stage: "complete",
+        status: "succeeded",
+        progress: 100,
+        message: "Your video is ready to review and download.",
+      },
+    } as const;
+    const next = completion[result.kind];
+    if (job.stage !== next.previous && job.stage !== next.stage)
+      throw new AppError(
+        409,
+        "INVALID_STAGE",
+        "The take has moved to another stage.",
+      );
+    if (job[next.field] && job[next.field] !== result.id)
+      throw new AppError(
+        409,
+        "PROVIDER_ID_CONFLICT",
+        "The take already has a provider result.",
+      );
+    job[next.field] = result.id;
+    job.submission_started_at = null;
+    job.updated_at = new Date().toISOString();
+    if (job.cancel_requested || job.stage === next.stage) return;
+    Object.assign(job, {
+      status: next.status,
+      stage: next.stage,
+      progress: next.progress,
+      next_run_at: Date.now(),
+    });
+    appendEvent(job, next.stage, next.message);
+  });
+}
 export function finishPreparation(
   job: Pick<StoredJob, "id" | "config">,
   reviewMessage: string,
+  worker?: string,
 ) {
   if (job.config.reviewBeforeGeneration)
-    return transition(job.id, "awaiting_approval", "review", 45, reviewMessage);
+    return transition(
+      job.id,
+      "awaiting_approval",
+      "review",
+      45,
+      reviewMessage,
+      worker,
+    );
   return transition(
     job.id,
     "queued",
     "registering",
     45,
     "Prepared references are ready. Continuing to video generation.",
+    worker,
   );
 }
 export async function approveJob(id: string) {
   const job = await workspace.update((state) => {
     const job = state.jobs[id];
     if (!job) throw new AppError(404, "NOT_FOUND", "Take not found.");
-    if (
-      job.status !== "awaiting_approval" ||
-      !job.masked_id ||
-      (job.config.prepareImage && !job.anchor_id) ||
-      job.cancel_requested
-    )
+    if (job.status !== "awaiting_approval" || job.cancel_requested)
       throw new AppError(
         409,
         "NOT_AWAITING_APPROVAL",
         "This take is not waiting for reference approval.",
       );
+    try {
+      resolveInputs(state.media, job.config);
+      reviewMedia(state.media, job);
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      throw new AppError(
+        409,
+        "NOT_AWAITING_APPROVAL",
+        "This take has missing or invalid prepared references.",
+      );
+    }
     Object.assign(job, {
       status: "queued",
       stage: "registering",
@@ -273,7 +447,13 @@ export async function claimJob(worker: string) {
 export async function renewLease(id: string, worker: string) {
   return workspace.update((state) => {
     const job = state.jobs[id];
-    if (!job || job.lease_owner !== worker) return false;
+    if (
+      !job ||
+      job.lease_owner !== worker ||
+      !job.lease_until ||
+      job.lease_until <= Date.now()
+    )
+      return false;
     job.lease_until = Date.now() + 180000;
     return !job.cancel_requested;
   });

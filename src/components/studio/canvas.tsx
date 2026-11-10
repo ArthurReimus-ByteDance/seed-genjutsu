@@ -16,6 +16,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Job, Upload } from "@/lib/schemas";
+import { workflows } from "@/lib/workflows";
+import { reviewMedia } from "./workflow-state";
 
 export const statusNames: Record<Job["status"], string> = {
   queued: "Queued",
@@ -173,6 +175,7 @@ function ClipVideo({
   useEffect(() => {
     const video = ref.current;
     if (video && video.readyState >= 1) video.currentTime = start;
+    return () => video?.pause();
   }, [media.id, start]);
   return (
     <video
@@ -311,15 +314,35 @@ export function MediaCanvas({
   tab: string | null;
   onTab: (tab: string) => void;
 }) {
+  const swap = !job || job.config.workflow === "character_swap";
+  const tabs = [
+    { id: "source", label: "Original", media: source },
+    {
+      id: "prepared",
+      label: "Prepared original",
+      media: !swap && job?.prepared,
+    },
+    { id: "masked", label: "Subject", media: swap && job?.masked },
+    { id: "anchor", label: "Scene look", media: swap && job?.anchor },
+    { id: "result", label: "Result", media: job?.result },
+    { id: "compare", label: "Compare", media: job?.result },
+  ].filter((entry) => entry.media);
   const chosen =
-    tab ??
-    (job?.result
-      ? "result"
-      : job?.status === "awaiting_approval"
-        ? job.anchor
-          ? "anchor"
-          : "masked"
-        : "source");
+    tab && tabs.some((entry) => entry.id === tab)
+      ? tab
+      : job?.result
+        ? "result"
+        : job?.status === "awaiting_approval"
+          ? !swap
+            ? job.prepared
+              ? "prepared"
+              : "source"
+            : job.anchor
+              ? "anchor"
+              : job.masked
+                ? "masked"
+                : "source"
+          : "source";
   const selected =
     chosen === "result" || chosen === "compare"
       ? job?.result
@@ -327,7 +350,9 @@ export function MediaCanvas({
         ? job?.anchor
         : chosen === "masked"
           ? job?.masked
-          : source;
+          : chosen === "prepared"
+            ? job?.prepared
+            : source;
   const busy =
     job && ["queued", "processing", "generating"].includes(job.status);
   const displayedDuration =
@@ -338,24 +363,16 @@ export function MediaCanvas({
     <section className="preview-card">
       <div className="preview-toolbar">
         <div className="preview-tabs" role="tablist" aria-label="Preview media">
-          {[
-            { id: "source", label: "Original", media: source },
-            { id: "masked", label: "Subject", media: job?.masked },
-            { id: "anchor", label: "Scene look", media: job?.anchor },
-            { id: "result", label: "Result", media: job?.result },
-            { id: "compare", label: "Compare", media: job?.result },
-          ]
-            .filter((t) => t.media)
-            .map((t) => (
-              <button
-                role="tab"
-                aria-selected={chosen === t.id}
-                key={t.id}
-                onClick={() => onTab(t.id)}
-              >
-                {t.id === "compare" && <Columns2 size={13} />} {t.label}
-              </button>
-            ))}
+          {tabs.map((t) => (
+            <button
+              role="tab"
+              aria-selected={chosen === t.id}
+              key={t.id}
+              onClick={() => onTab(t.id)}
+            >
+              {t.id === "compare" && <Columns2 size={13} />} {t.label}
+            </button>
+          ))}
         </div>
         {job ? (
           <StatusBadge job={job} />
@@ -385,7 +402,9 @@ export function MediaCanvas({
                   ? "Result preview"
                   : chosen === "masked"
                     ? "Subject preview"
-                    : "Performance preview"
+                    : chosen === "prepared"
+                      ? "Prepared original video preview"
+                      : "Performance preview"
               }
             />
           ) : selected ? (
@@ -442,7 +461,9 @@ export function MediaCanvas({
               ? "Synchronized comparison"
               : chosen === "anchor"
                 ? "Appearance reference"
-                : "Performance reference"}
+                : chosen === "prepared"
+                  ? "Original clip for registration"
+                  : "Performance reference"}
         </span>
       </div>
       {busy && (
@@ -479,6 +500,8 @@ export function RunDetails({
 }) {
   const [activity, setActivity] = useState(false);
   const review = job.status === "awaiting_approval";
+  const swap = job.config.workflow === "character_swap";
+  const canApprove = !!reviewMedia(job);
   const uncertain = job.status === "needs_attention";
   const failed = job.status === "failed" || uncertain;
   const done = job.status === "succeeded";
@@ -490,6 +513,7 @@ export function RunDetails({
         failed && "run-failed",
       )}
     >
+      <p className="run-workflow">{workflows[job.config.workflow].label}</p>
       <JobStepper job={job} />
       <div className="run-main">
         {!done && (
@@ -507,9 +531,11 @@ export function RunDetails({
             </h3>
             <p>
               {review
-                ? "Check the subject mask and preserved scene" +
-                  (job.anchor ? " and prepared scene look" : "") +
-                  ", then approve to create your video."
+                ? swap
+                  ? "Check the subject mask and preserved scene" +
+                    (job.anchor ? " and prepared scene look" : "") +
+                    ", then approve to create your video."
+                  : "Review the prepared original clip and ordered images, then approve to create your video."
                 : failed
                   ? uncertain
                     ? "The provider submission wasn’t confirmed. Check for an existing provider task before creating another."
@@ -523,7 +549,10 @@ export function RunDetails({
         <div className="run-actions">
           {review ? (
             <>
-              <Button onClick={onApprove} disabled={approving || cancelling}>
+              <Button
+                onClick={onApprove}
+                disabled={approving || cancelling || !canApprove}
+              >
                 {approving ? (
                   <Loader2 className="animate-spin" size={14} />
                 ) : (
@@ -583,6 +612,12 @@ export function RunDetails({
           )}
         </div>
       </div>
+      {review && !swap && (
+        <p className="review-disclaimer">
+          Virtual Portrait registers the video reference; it does not verify
+          consent.
+        </p>
+      )}
       {job.error && (
         <div className="run-error" role="alert">
           {job.error}

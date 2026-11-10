@@ -1,10 +1,8 @@
-import nextEnv from "@next/env";
-const { loadEnvConfig } = nextEnv;
-loadEnvConfig(process.cwd());
+import { loadEnvironment } from "./environment.mjs";
+loadEnvironment();
 
 async function main() {
   const { APP_NAME, DOWNLOAD_PREFIX } = await import("../src/lib/branding");
-  const { videoModels } = await import("../src/lib/video-models");
   const { providerModelId } = await import("../src/server/video-models");
   const { env } = await import("../src/env");
   const { workspace, workerHeartbeat } =
@@ -17,6 +15,8 @@ async function main() {
     updateJob,
     claimJob,
     renewLease,
+    completeProviderStage,
+    validateSubmission,
   } = await import("../src/server/jobs");
   const { getMedia, localPath, providerUrl, saveMedia } =
     await import("../src/server/storage");
@@ -57,7 +57,12 @@ async function main() {
   async function markSubmission(jobId: string) {
     await workspace.update((state) => {
       const job = state.jobs[jobId];
-      if (job.cancel_requested || job.lease_owner !== id)
+      if (
+        job.cancel_requested ||
+        job.lease_owner !== id ||
+        !job.lease_until ||
+        job.lease_until <= Date.now()
+      )
         throw new AppError(
           409,
           "CANCELLED",
@@ -72,6 +77,7 @@ async function main() {
   async function step(jobId: string, signal: AbortSignal) {
     const job = await jobRecord(jobId);
     const config = job.config;
+    const swap = config.workflow === "character_swap";
     if (job.cancel_requested) {
       if (job.provider_task_id)
         await fetch(
@@ -92,8 +98,20 @@ async function main() {
       });
       return;
     }
+    const recovered =
+      job.stage === "submitting" && job.provider_task_id
+        ? { kind: "task" as const, id: job.provider_task_id }
+        : job.stage === "registering" && job.asset_id
+          ? { kind: "asset" as const, id: job.asset_id }
+          : job.stage === "generating" && job.result_id
+            ? { kind: "result" as const, id: job.result_id }
+            : null;
+    if (recovered) {
+      await completeProviderStage(job.id, id, recovered);
+      return;
+    }
     const checkpoint =
-      job.stage === "masking"
+      swap && job.stage === "masking"
         ? await samCheckpointStore(job.id).read((state) => state.response)
         : null;
     if (job.submission_started_at && !checkpoint)
@@ -103,6 +121,14 @@ async function main() {
       );
     const source = await getMedia(job.source_id);
     if (job.stage === "queued") {
+      if (!swap && job.prepared_id && job.frame_id) {
+        await finishPreparation(
+          job,
+          "Your prepared clip is ready. Review it before video generation.",
+          id,
+        );
+        return;
+      }
       await event(
         job.id,
         "preparing",
@@ -137,16 +163,31 @@ async function main() {
       } finally {
         await rm(prepared.dir, { recursive: true, force: true });
       }
+      if (!swap) {
+        await finishPreparation(
+          job,
+          "Your prepared clip is ready. Review it before video generation.",
+          id,
+        );
+        return;
+      }
       await transition(
         job.id,
         "processing",
         "masking",
         15,
         "Source prepared. Tracking the selected subject with Meta SAM 3.1.",
+        id,
       );
       return;
     }
     if (job.stage === "masking") {
+      if (!swap)
+        throw new AppError(
+          400,
+          "INVALID_STAGE",
+          "This workflow does not use subject masking.",
+        );
       if (!job.masked_id) {
         if (job.sam_request_id)
           throw new ProviderError(
@@ -229,19 +270,27 @@ async function main() {
           "image_preparation",
           35,
           "Masked video ready. Preparing the character in your scene.",
+          id,
         );
       else
         await finishPreparation(
           job,
           "Masked performance is ready. Review it before video generation.",
+          id,
         );
       return;
     }
     if (job.stage === "image_preparation") {
+      if (!swap)
+        throw new AppError(
+          400,
+          "INVALID_STAGE",
+          "Scene-image preparation is unavailable for this workflow.",
+        );
       const reviewMessage =
         "Your scene image is ready. Approve the references to generate the video.";
       if (job.anchor_id) {
-        await finishPreparation(job, reviewMessage);
+        await finishPreparation(job, reviewMessage, id);
         return;
       }
       if (!env.SEEDREAM_MODEL)
@@ -251,7 +300,13 @@ async function main() {
           "Configure a verified Seedream model ID before preparing the scene image.",
         );
       const frameMedia = await getMedia(job.frame_id!);
-      const character = await getMedia(job.character_id);
+      const { character } = await validateSubmission(job.id, false);
+      if (!character)
+        throw new AppError(
+          400,
+          "INVALID_INPUT",
+          "The character image is missing.",
+        );
       const [frameUrl, characterUrl] = await Promise.all([
         providerUrl(frameMedia),
         providerUrl(character),
@@ -288,15 +343,16 @@ async function main() {
         anchor_id: anchor.id,
         submission_started_at: null,
       });
-      await finishPreparation(job, reviewMessage);
+      await finishPreparation(job, reviewMessage, id);
       return;
     }
     if (job.stage === "registering") {
+      const { registration } = await validateSubmission(job.id);
       if (!env.BYTEPLUS_ACCESS_KEY || !env.BYTEPLUS_SECRET_KEY)
         throw new AppError(
           503,
           "PORTRAIT_SETUP",
-          "Connect your Virtual Portrait AK/SK to register the masked performance video.",
+          "Connect your Virtual Portrait AK/SK to register the prepared video reference.",
         );
       if (!job.asset_group_id) {
         let groupId =
@@ -328,13 +384,13 @@ async function main() {
         await delayJob(job.id, 1);
         return;
       }
-      const masked = await getMedia(job.masked_id!);
+      const registrationUrl = await providerUrl(registration);
       await markSubmission(job.id);
       const asset = await arkAction(
         "CreateAsset",
         {
           GroupId: job.asset_group_id,
-          URL: await providerUrl(masked),
+          URL: registrationUrl,
           AssetType: "Video",
           Name: APP_NAME + " " + job.id,
         },
@@ -342,24 +398,17 @@ async function main() {
       );
       if (!asset.Id)
         throw new ProviderError("Virtual Portrait returned no asset ID.", true);
-      await updateJob(job.id, {
-        asset_id: String(asset.Id),
-        submission_started_at: null,
+      await completeProviderStage(job.id, id, {
+        kind: "asset",
+        id: String(asset.Id),
       });
-      await transition(
-        job.id,
-        "processing",
-        "asset_review",
-        55,
-        "Reference uploaded. Waiting for Virtual Portrait processing.",
-      );
       return;
     }
     if (job.stage === "asset_review") {
       const asset = await arkAction("GetAsset", { Id: job.asset_id }, signal);
       if (asset.Status === "Failed")
         throw new ProviderError(
-          "Virtual Portrait could not accept this reference. Review the masked video and its asset eligibility.",
+          "Virtual Portrait could not accept this reference. Review the prepared video and its asset eligibility.",
         );
       if (asset.Status !== "Active") {
         await delayJob(job.id, 10);
@@ -370,40 +419,67 @@ async function main() {
         "processing",
         "submitting",
         65,
-        "Your reference is active. Submitting the Seedance edit.",
+        "Your reference is active. Submitting the video transformation.",
+        id,
       );
       return;
     }
     if (job.stage === "submitting") {
-      const character = await getMedia(job.character_id);
-      const anchor = job.anchor_id ? await getMedia(job.anchor_id) : null;
-      const body = seedanceRequest({
-        model: config.model,
-        providerModel: job.seedance_model_id ?? providerModelId(config.model),
-        duration: config.duration,
-        videoUri: "asset://" + job.asset_id,
-        characterUrl: await providerUrl(character),
-        anchorUrl: anchor ? await providerUrl(anchor) : undefined,
-        target: config.target,
-        prompt: config.prompt,
-        resolution: config.resolution,
-        preserveAudio: config.preserveAudio,
-      });
+      const { character, anchor, references } = await validateSubmission(
+        job.id,
+      );
+      if (!job.asset_id)
+        throw new AppError(
+          400,
+          "MISSING_ASSET",
+          "The registered video reference is missing.",
+        );
+      const providerModel =
+        job.seedance_model_id ?? providerModelId(config.model);
+      const videoUri = "asset://" + job.asset_id;
+      let body: Record<string, unknown>;
+      if (swap) {
+        if (!character)
+          throw new AppError(
+            400,
+            "INVALID_INPUT",
+            "The character image is missing.",
+          );
+        body = seedanceRequest({
+          model: config.model,
+          providerModel,
+          duration: config.duration,
+          videoUri,
+          characterUrl: await providerUrl(character),
+          anchorUrl: anchor ? await providerUrl(anchor) : undefined,
+          target: config.target,
+          prompt: config.prompt,
+          resolution: config.resolution,
+          preserveAudio: config.preserveAudio,
+        });
+      } else {
+        const { transformationRequest } =
+          await import("../src/server/generation");
+        body = transformationRequest({
+          config,
+          providerModel,
+          videoUri,
+          references: await Promise.all(
+            references.map(async (reference) => ({
+              role: reference.role,
+              url: await providerUrl(reference.media),
+            })),
+          ),
+        });
+      }
       await markSubmission(job.id);
       const task = await modelArk("/contents/generations/tasks", body, signal);
       if (!task.id)
         throw new ProviderError("Seedance returned no task ID.", true);
-      await updateJob(job.id, {
-        provider_task_id: String(task.id),
-        submission_started_at: null,
+      await completeProviderStage(job.id, id, {
+        kind: "task",
+        id: String(task.id),
       });
-      await transition(
-        job.id,
-        "generating",
-        "generating",
-        75,
-        videoModels[config.model].label + " is creating your character swap.",
-      );
       await delayJob(job.id, 10);
       return;
     }
@@ -414,10 +490,18 @@ async function main() {
         undefined,
         signal,
       );
-      if (["failed", "cancelled", "expired"].includes(String(task.status)))
+      if (["failed", "cancelled", "expired"].includes(String(task.status))) {
+        const failure = task.error as
+          { code?: unknown; Code?: unknown } | undefined;
+        const code = String(failure?.code ?? failure?.Code ?? task.status)
+          .replace(/[^a-zA-Z0-9_.-]/g, "")
+          .slice(0, 100);
         throw new ProviderError(
-          "Seedance could not complete this generation. Review model access and reference eligibility before starting a new run.",
+          "Seedance could not complete this generation (" +
+            code +
+            "). Review model access, task support and reference eligibility before starting a new run.",
         );
+      }
       if (task.status !== "succeeded") {
         await delayJob(job.id, 10);
         return;
@@ -444,17 +528,13 @@ async function main() {
           data: delivered,
           ...meta,
         });
-        await updateJob(job.id, { result_id: result.id });
+        await completeProviderStage(job.id, id, {
+          kind: "result",
+          id: result.id,
+        });
       } finally {
         await rm(file, { force: true });
       }
-      await transition(
-        job.id,
-        "succeeded",
-        "complete",
-        100,
-        "Your character swap is ready to review and download.",
-      );
       return;
     }
     throw new Error("Unsupported job stage");
@@ -480,6 +560,12 @@ async function main() {
         await step(jobId, controller.signal);
       } catch (error) {
         const latest = await jobRecord(jobId);
+        if (
+          latest.lease_owner !== id ||
+          !latest.lease_until ||
+          latest.lease_until <= Date.now()
+        )
+          continue;
         if (latest.cancel_requested) {
           await updateJob(jobId, {
             status: "cancelled",

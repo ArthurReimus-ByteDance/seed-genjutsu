@@ -2,7 +2,11 @@ name: recast-studio
 x-app: &app
   image: recast-studio:local
   build: .
-  env_file: .env.local
+  env_file:
+    - path: .env
+      required: false
+    - path: .env.local
+      required: false
   environment:
     NODE_ENV: production
     MEDIA_ROOT: /app/.data
@@ -27,6 +31,12 @@ services:
   worker:
     <<: *app
     command: ["./node_modules/.bin/tsx", "scripts/worker.ts"]
+    healthcheck:
+      test: ["CMD", "node", "scripts/worker-health.mjs"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 volumes:
   media:

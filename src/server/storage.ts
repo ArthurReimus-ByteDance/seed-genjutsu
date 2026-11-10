@@ -11,16 +11,16 @@ import type { Upload } from "@/lib/schemas";
 export const mediaRoot = path.resolve(env.MEDIA_ROOT);
 let client: TosClient | undefined;
 export function tos() {
-  if (!env.TOS_BUCKET || !env.TOS_ACCESS_KEY || !env.TOS_SECRET_KEY)
+  if (!env.TOS_BUCKET || !env.BYTEPLUS_ACCESS_KEY || !env.BYTEPLUS_SECRET_KEY)
     throw new AppError(
       503,
       "STORAGE_SETUP",
-      "Connect your private BytePlus TOS bucket and access keys.",
+      "Connect your private TOS bucket and shared BytePlus access keys.",
     );
   return (client ??= new TosClient({
-    accessKeyId: env.TOS_ACCESS_KEY,
-    accessKeySecret: env.TOS_SECRET_KEY,
-    stsToken: env.TOS_SESSION_TOKEN,
+    accessKeyId: env.BYTEPLUS_ACCESS_KEY,
+    accessKeySecret: env.BYTEPLUS_SECRET_KEY,
+    stsToken: env.BYTEPLUS_SESSION_TOKEN,
     region: env.TOS_REGION,
     endpoint: env.TOS_ENDPOINT,
     secure: true,

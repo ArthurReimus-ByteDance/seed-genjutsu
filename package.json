@@ -8,12 +8,14 @@
     "start": "node scripts/start.mjs",
     "lint": "eslint",
     "worker": "tsx scripts/worker.ts",
+    "worker:production": "NODE_ENV=production tsx scripts/worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "smoke": "tsx scripts/smoke.ts",
+    "smoke": "node scripts/smoke-harness.mjs",
+    "smoke:container": "node scripts/container-smoke.mjs",
     "setup": "node scripts/setup.mjs",
     "format": "prettier --write src scripts tests docs README.md",
-    "demo:smoke": "tsx scripts/demo-smoke.ts"
+    "demo:smoke": "node scripts/smoke-harness.mjs demo"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.85",

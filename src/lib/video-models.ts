@@ -27,7 +27,36 @@ export function clampClipDuration(
 ) {
   const duration = Math.max(
     4,
-    Math.min(value, videoModels[model].maxDuration, available),
+    Math.min(
+      Number.isFinite(value) ? value : 4,
+      videoModels[model].maxDuration,
+      available,
+    ),
   );
   return model === "seedance-2" ? Math.floor(duration) : duration;
+}
+
+export function normalizeClip({
+  start,
+  duration,
+  sourceDuration,
+  model,
+}: {
+  start: number;
+  duration: number;
+  sourceDuration: number | null;
+  model: VideoModelId;
+}) {
+  const end =
+    sourceDuration != null && Number.isFinite(sourceDuration)
+      ? Math.max(0, sourceDuration)
+      : videoModels[model].maxDuration;
+  const safeStart = Math.max(
+    0,
+    Math.min(Number.isFinite(start) ? start : 0, Math.max(0, end - 4), 300),
+  );
+  return {
+    start: safeStart,
+    duration: clampClipDuration(duration, model, end - safeStart),
+  };
 }

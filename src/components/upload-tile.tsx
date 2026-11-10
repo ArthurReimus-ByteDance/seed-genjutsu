@@ -1,6 +1,6 @@
 "use client";
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Film, ImagePlus, Upload, Loader2, X, Check } from "lucide-react";
 import { toast } from "sonner";
 import { api, type StudioApi } from "@/lib/api";
@@ -12,6 +12,7 @@ export function UploadTile({
   disabled,
   apiClient = api,
   onBusyChange,
+  label,
 }: {
   kind: "video" | "character";
   value: Media | null;
@@ -19,10 +20,22 @@ export function UploadTile({
   disabled?: boolean;
   apiClient?: StudioApi;
   onBusyChange?: (busy: boolean) => void;
+  label?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const pending = useRef<AbortController | null>(null);
-  useEffect(() => () => pending.current?.abort(), []);
+  const current = useRef({ disabled, onChange, onBusyChange });
+  useLayoutEffect(() => {
+    current.current = { disabled, onChange, onBusyChange };
+  });
+  useEffect(
+    () => () => {
+      pending.current?.abort();
+      pending.current = null;
+      current.current.onBusyChange?.(false);
+    },
+    [],
+  );
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [drag, setDrag] = useState(false);
@@ -45,18 +58,25 @@ export function UploadTile({
     setProgress(0);
     try {
       const media = await apiClient.upload(file, kind, setProgress, signal);
-      if (signal.aborted) return;
-      onChange(media);
+      if (signal.aborted || current.current.disabled) return;
+      current.current.onChange(media);
       toast.success(
-        kind === "video" ? "Your performance is ready." : "Character added.",
+        kind === "video"
+          ? "Your performance is ready."
+          : label
+            ? "Reference added."
+            : "Character added.",
       );
     } catch (e) {
       if (!signal.aborted)
         toast.error(e instanceof Error ? e.message : "Upload failed.");
     } finally {
-      onBusyChange?.(false);
-      setLoading(false);
-      if (input.current) input.current.value = "";
+      if (pending.current === controller) {
+        pending.current = null;
+        current.current.onBusyChange?.(false);
+        setLoading(false);
+        if (input.current) input.current.value = "";
+      }
     }
   }
   return (
@@ -78,7 +98,11 @@ export function UploadTile({
         ref={input}
         data-testid={kind + "-upload"}
         aria-label={
-          kind === "video" ? "Upload source video" : "Upload character image"
+          label
+            ? "Upload " + label.toLowerCase()
+            : kind === "video"
+              ? "Upload source video"
+              : "Upload character image"
         }
         type="file"
         accept={
@@ -96,7 +120,11 @@ export function UploadTile({
         disabled={disabled || loading}
         onClick={() => input.current?.click()}
         aria-label={
-          kind === "video" ? "Choose source video" : "Choose character image"
+          label
+            ? "Choose " + label.toLowerCase()
+            : kind === "video"
+              ? "Choose source video"
+              : "Choose character image"
         }
       >
         {value ? (
@@ -111,6 +139,7 @@ export function UploadTile({
               className="upload-preview"
               fill
               unoptimized
+              sizes="(max-width: 900px) 50vw, 160px"
             />
             <span className="upload-shade" />
             <span className="upload-replace">
@@ -131,7 +160,7 @@ export function UploadTile({
               )}
             </span>
             <span className="upload-title">
-              {kind === "video" ? "Source video" : "Your character"}
+              {label ?? (kind === "video" ? "Source video" : "Your character")}
             </span>
             <span className="upload-hint">
               {kind === "video"

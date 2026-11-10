@@ -6,6 +6,13 @@ import {
   videoModels,
   type VideoModelId,
 } from "./video-models";
+import {
+  referenceSchema,
+  workflowIds,
+  stylePresetIds,
+  effectiveDirection,
+  STYLE_PRESET_REVISION,
+} from "./workflows";
 export const uploadSchema = z.object({
   id: z.uuid(),
   kind: z.enum([
@@ -31,13 +38,18 @@ function jobConfigSchema(defaultModel: VideoModelId) {
   return z
     .object({
       model: z.enum(videoModelIds).default(defaultModel),
+      workflow: z.enum(workflowIds).default("character_swap"),
       sourceId: z.uuid(),
-      characterId: z.uuid(),
-      prompt: z
-        .string()
-        .trim()
-        .min(10, "Describe the character swap in at least 10 characters.")
-        .max(3000),
+      characterId: z.uuid().optional(),
+      references: z.array(referenceSchema).max(30).default([]),
+      operation: z
+        .enum(["replace", "add", "remove", "modify"])
+        .default("modify"),
+      stylePreset: z.enum(stylePresetIds).default("custom"),
+      stylePresetRevision: z
+        .literal(STYLE_PRESET_REVISION)
+        .default(STYLE_PRESET_REVISION),
+      prompt: z.string().trim().max(3000),
       target: z.string().trim().min(1).max(160).default("person"),
       start: z.number().min(0).max(300).default(0),
       duration: z.number().min(4).max(30),
@@ -47,6 +59,48 @@ function jobConfigSchema(defaultModel: VideoModelId) {
       reviewBeforeGeneration: z.boolean().default(true),
     })
     .superRefine((config, context) => {
+      const issue = (path: string, message: string) =>
+        context.addIssue({ code: "custom", path: [path], message });
+      if (config.workflow === "character_swap") {
+        if (!config.characterId)
+          issue("characterId", "Choose a replacement character image.");
+        if (config.references.length)
+          issue("references", "Character swaps use the character image input.");
+      } else {
+        if (config.model !== "seedance-2.5")
+          issue("model", "New workflows require Seedance 2.5.");
+        if (config.characterId)
+          issue("characterId", "Use ordered references for this workflow.");
+        if (config.prepareImage)
+          issue(
+            "prepareImage",
+            "Scene-image preparation is available for character swaps only.",
+          );
+        if (
+          config.workflow === "motion_transfer" &&
+          !config.references.some((reference) =>
+            ["character", "identity", "scene"].includes(reference.role),
+          )
+        )
+          issue(
+            "references",
+            "Choose a character, identity, or scene reference for motion transfer.",
+          );
+      }
+      if (effectiveDirection(config).length < 10)
+        issue(
+          "prompt",
+          "Describe the transformation in at least 10 characters, or choose a style preset.",
+        );
+      const ids = new Set(config.references.map((reference) => reference.id));
+      const mediaIds = new Set(
+        config.references.map((reference) => reference.mediaId),
+      );
+      if (
+        ids.size !== config.references.length ||
+        mediaIds.size !== config.references.length
+      )
+        issue("references", "Each reference must have a unique ID and image.");
       if (
         config.duration > videoModels[config.model].maxDuration ||
         (config.model === "seedance-2" && !Number.isInteger(config.duration))
@@ -61,9 +115,25 @@ function jobConfigSchema(defaultModel: VideoModelId) {
         });
     });
 }
-export const createJobSchema = jobConfigSchema(DEFAULT_VIDEO_MODEL);
+const newJobConfigSchema = jobConfigSchema(DEFAULT_VIDEO_MODEL);
+export const createJobSchema = z.preprocess((input, context) => {
+  if (
+    input &&
+    typeof input === "object" &&
+    !Array.isArray(input) &&
+    "workflow" in input &&
+    input.workflow !== "character_swap"
+  ) {
+    const keys = Object.keys(input).filter(
+      (key) => !Object.hasOwn(newJobConfigSchema.shape, key),
+    );
+    if (keys.length)
+      context.addIssue({ code: "unrecognized_keys", keys, path: [] });
+  }
+  return input;
+}, newJobConfigSchema);
 export const generationPromptSchema = z.object({
-  prompt: createJobSchema.shape.prompt,
+  prompt: z.string().trim().min(10).max(3000),
 });
 // Takes saved before the picker were submitted with Seedance 2.5.
 export const savedJobConfigSchema = jobConfigSchema(LEGACY_VIDEO_MODEL);
@@ -93,7 +163,17 @@ export const jobSchema = z.object({
   progress: z.number(),
   config: savedJobConfigSchema,
   source: uploadSchema,
-  character: uploadSchema,
+  character: uploadSchema.nullable(),
+  references: z
+    .array(
+      z.object({
+        id: z.uuid(),
+        role: referenceSchema.shape.role,
+        media: uploadSchema,
+      }),
+    )
+    .default([]),
+  prepared: uploadSchema.nullable().default(null),
   frame: uploadSchema.nullable(),
   anchor: uploadSchema.nullable(),
   masked: uploadSchema.nullable(),
@@ -105,6 +185,19 @@ export const jobSchema = z.object({
 });
 export type Job = z.infer<typeof jobSchema>;
 export const capabilitySchema = z.object({
+  workflows: z
+    .array(
+      z.object({
+        id: z.enum(workflowIds),
+        label: z.string(),
+        model: z.enum(videoModelIds).nullable(),
+        requiresSam: z.boolean(),
+        maxImageReferences: z.number().int(),
+        configured: z.boolean(),
+        qualityValidated: z.boolean(),
+      }),
+    )
+    .default([]),
   video: z.boolean(),
   image: z.boolean(),
   storage: z.boolean(),
