@@ -178,6 +178,87 @@ test("retry retains original intent separately from previous wording and rejects
   );
 });
 
+test("swap enhancement keeps sheet anatomy separate from donor pose without inventing measurements or overriding exceptions", () => {
+  for (const model of ["seedance-2", "seedance-2.5"] as const) {
+    const direction =
+      'Only replace the face; keep source proportions and "Hi".';
+    const prepared = enhancementInput({
+      ...input,
+      model,
+      prompt: direction,
+      prepareImage: true,
+    });
+    const context = JSON.parse(prepared.prompt);
+    assert.equal(context.originalDirection, direction);
+    assert.match(
+      prepared.system,
+      /Image 1 is the authority for body proportions/,
+    );
+    assert.match(prepared.system, /gray silhouette.*not.*body shape/);
+    assert.match(prepared.system, /natural perspective and foreshortening/);
+    assert.match(
+      prepared.system,
+      /Never invent anatomical measurements or ratios/,
+    );
+    assert.match(
+      prepared.system,
+      /explicitly requested source proportions or face-only edits/,
+    );
+    assert.match(
+      prepared.system,
+      /Image 2.*defer to Image 1.*body proportions/,
+    );
+  }
+});
+
+test("swap enhancement distinguishes scene placement and wardrobe layers while preserving authored changes", () => {
+  const direction =
+    'Bring the character closer to the camera, keep source shoes and "Hello", and use a sleeveless vest over a long-sleeved shirt.';
+  for (const model of ["seedance-2", "seedance-2.5"] as const) {
+    for (const prepareImage of [false, true]) {
+      const prepared = enhancementInput({
+        ...input,
+        model,
+        prepareImage,
+        prompt: direction,
+      });
+      assert.equal(JSON.parse(prepared.prompt).originalDirection, direction);
+      assert.equal(JSON.parse(prepared.prompt).scenePreparation, prepareImage);
+      assert.match(
+        prepared.system,
+        /scene placement and apparent camera distance/,
+      );
+      assert.match(prepared.system, /movement in depth and airborne phases/);
+      assert.match(prepared.system, /Do not turn.*enlarge.*zoom or reframe/);
+      assert.match(
+        prepared.system,
+        /Bind clothing descriptions to individual garments/,
+      );
+      assert.match(
+        prepared.system,
+        /sleeveless outer garment.*underlayer's sleeves/,
+      );
+      assert.match(
+        prepared.system,
+        /Do not invent an unseen garment or sleeve length/,
+      );
+      assert.match(
+        prepared.system,
+        /Image 2.*Video 1 for camera, framing and placement/,
+      );
+      assert.match(
+        prepared.system,
+        /Only mention Image 2 when scenePreparation is true/,
+      );
+      assert.match(
+        prepared.system,
+        /never tell the model both to change and preserve the same attribute/,
+      );
+      assert.match(prepared.system, /State each reference's role once/);
+    }
+  }
+});
+
 test("new workflows send semantic context without silhouette or invented image references", () => {
   for (const workflow of [
     "element_edit",

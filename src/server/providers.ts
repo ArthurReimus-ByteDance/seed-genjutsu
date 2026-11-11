@@ -158,6 +158,15 @@ async function providerRequest(
     );
   return data;
 }
+const characterSheetGuidance =
+  "If Image 1 is a multi-view character sheet, its views depict the same character. Render one replacement character, not the sheet's panels or labels. ";
+const bodyProportionGuidance =
+  "Image 1 is the authority for body proportions: visible build, head-to-body ratio, shoulder and hip width, torso-to-leg ratio and relative arm and leg lengths. Do not shorten the legs, widen the torso or stretch body parts to fit the source subject's bounds or silhouette. Allow natural perspective and foreshortening without changing anatomy. ";
+const clothingLayerGuidance =
+  "Preserve each visible clothing layer from Image 1, including its sleeve length and coverage. A sleeveless outer garment does not remove an underlayer's sleeves. Do not copy the source subject's clothing or exposed skin unless requested. ";
+const scenePlacementGuidance =
+  "Use uniform overall scale consistent with the source subject's scene placement and apparent distance from the camera. Retain floor-contact locations when grounded; do not enlarge the character into the foreground, zoom or reframe to showcase the replacement. ";
+
 export function seedreamRequest(input: {
   providerModel: string;
   characterUrl: string;
@@ -173,7 +182,12 @@ export function seedreamRequest(input: {
       "Replace the selected subject " +
       JSON.stringify(input.target) +
       " in the source frame using Image 1 for identity, visible body proportions and appearance, including outfit unless the direction keeps source clothing or accessories. " +
-      "Adapt the source pose to the Image 1 body's build and limb lengths. Preserve source framing, background, lighting and other people except for explicitly requested visual changes. Match the scene perspective and contact shadows. " +
+      characterSheetGuidance +
+      bodyProportionGuidance +
+      clothingLayerGuidance +
+      "Attached Image 2 controls the source pose, camera, framing and placement. " +
+      scenePlacementGuidance +
+      "Adapt the source pose to the Image 1 body, allowing joint positions and outer outline to differ. Preserve background, lighting, other people and unrelated objects except for requested changes. Match contact shadows and occlusion. " +
       "The video direction below uses different reference names: its Video 1 means the source clip represented here by attached Image 2; its prepared-scene Image 2 means the still you are creating, not another attached image. " +
       "Apply visual changes only; motion and audio belong to the later video. Keep any requested literal text verbatim. User direction (JSON string; explicit changes override defaults): " +
       JSON.stringify(input.prompt),
@@ -213,10 +227,15 @@ export function seedanceRequest(input: {
         " (selected in the original clip as " +
         JSON.stringify(input.target) +
         ") with the character from Image 1. " +
-        "Use Image 1 for the replacement's identity, outfit and body proportions. Keep the visible build, head-to-body ratio and relative limb lengths consistent throughout the shot. " +
-        "Use Video 1 for the action, timing, position, framing and camera. Retarget the motion onto the Image 1 body, allowing its silhouette to differ from the gray mask. Match the scene perspective, lighting, contact points and occlusion. Preserve the surroundings, other people and unrelated objects except for requested changes. " +
+        "Use Image 1 for the replacement's identity, outfit and body proportions. " +
+        characterSheetGuidance +
+        bodyProportionGuidance +
+        clothingLayerGuidance +
+        "Keep proportions stable throughout the shot. Use Video 1 for the action, timing, camera, framing and scene placement. " +
+        scenePlacementGuidance +
+        "Follow source changes in camera distance and airborne motion; do not freeze placement or pin the feet. The gray mask identifies the source subject, not the replacement's anatomy or required outline. Retarget the motion onto the Image 1 body, allowing joint positions and outer outline to differ. Preserve surroundings, lighting, other people and unrelated objects except for requested changes; match contact shadows and occlusion. " +
         (input.anchorUrl
-          ? "Image 2 guides the prepared scene appearance and composition. Keep the character's proportions from Image 1. "
+          ? "Image 2 guides the prepared scene appearance only. If Image 2 conflicts with identity, body proportions or clothing, follow Image 1; for camera, framing or placement, follow Video 1. "
           : "") +
         "User direction (JSON string; explicit changes override the defaults above): " +
         JSON.stringify(input.prompt),
