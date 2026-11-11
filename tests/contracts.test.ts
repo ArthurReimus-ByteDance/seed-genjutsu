@@ -36,6 +36,148 @@ test("scene preparation maps video references without rewriting quoted text or w
   assert.match(body.prompt, /person in a red jacket/);
 });
 
+test("Seedream prioritizes sheet anatomy over source bounds while preserving pose and user exceptions", () => {
+  const direction =
+    'Replace only the face, keep source body proportions, and retain the sign "Image 1".';
+  const body = seedreamRequest({
+    providerModel: "test-seedream",
+    characterUrl: "https://example.com/sheet.jpg",
+    frameUrl: "https://example.com/frame.jpg",
+    target: 'performer beside the "Image 1" sign',
+    prompt: direction,
+  });
+  assert.match(body.prompt, /Image 1 is the authority for body proportions/);
+  for (const trait of [
+    "head-to-body ratio",
+    "shoulder and hip width",
+    "torso-to-leg ratio",
+    "relative arm and leg lengths",
+  ])
+    assert.ok(body.prompt.includes(trait));
+  assert.match(body.prompt, /multi-view character sheet.*same character/);
+  assert.match(body.prompt, /uniform overall scale/);
+  assert.match(body.prompt, /not.*shorten.*legs.*widen.*torso/);
+  assert.match(body.prompt, /source subject's bounds/);
+  assert.match(body.prompt, /natural perspective and foreshortening/);
+  assert.match(body.prompt, /contact shadows/);
+  assert.match(body.prompt, /explicit changes override defaults/);
+  assert.ok(body.prompt.includes(JSON.stringify(direction)));
+  assert.ok(
+    body.prompt.includes(JSON.stringify('performer beside the "Image 1" sign')),
+  );
+});
+
+test("both Seedance modes keep sheet anatomy stable without fitting the source silhouette or scene reference", () => {
+  for (const model of ["seedance-2", "seedance-2.5"] as const)
+    for (const anchorUrl of [
+      undefined,
+      "https://example.com/prepared-scene.jpg",
+    ]) {
+      const direction =
+        'Keep source proportions for this face-only edit and the shirt text "Video 1".';
+      const body = seedanceRequest({
+        model,
+        providerModel: "test-seedance",
+        duration: 4,
+        videoUri: "asset://source",
+        characterUrl: "https://example.com/sheet.jpg",
+        anchorUrl,
+        target: "performer on the left",
+        prompt: direction,
+        resolution: "720p",
+        preserveAudio: true,
+      });
+      const text = body.content[0].text as string;
+      assert.match(text, /Image 1 is the authority for body proportions/);
+      for (const trait of [
+        "head-to-body ratio",
+        "shoulder and hip width",
+        "torso-to-leg ratio",
+        "relative arm and leg lengths",
+      ])
+        assert.ok(text.includes(trait));
+      assert.match(text, /multi-view character sheet.*same character/);
+      assert.match(text, /gray mask.*not.*anatomy.*required outline/);
+      assert.match(text, /uniform overall scale/);
+      assert.match(text, /not.*shorten.*legs.*widen.*torso/);
+      assert.match(text, /joint positions and outer outline to differ/);
+      assert.match(text, /natural perspective and foreshortening/);
+      assert.match(text, /proportions stable throughout the shot/);
+      assert.match(text, /explicit changes override the defaults/);
+      assert.ok(text.endsWith(JSON.stringify(direction)));
+      assert.equal(body.content.length, anchorUrl ? 4 : 3);
+      if (anchorUrl)
+        assert.match(
+          text,
+          /If Image 2 conflicts.*body proportions.*follow Image 1/,
+        );
+      else assert.ok(!text.includes("Image 2"));
+    }
+});
+
+test("character prompts preserve scene depth and clothing layers without inventing a sample outfit", () => {
+  const direction =
+    'Keep the source shoes, move closer to the camera, add a sleeveless vest over a long-sleeved shirt, and retain "Image 2".';
+  const image = seedreamRequest({
+    providerModel: "test-seedream",
+    characterUrl: "https://example.com/sheet.jpg",
+    frameUrl: "https://example.com/frame.jpg",
+    target: "performer",
+    prompt: direction,
+  });
+  const prompts = [image.prompt];
+  for (const model of ["seedance-2", "seedance-2.5"] as const) {
+    for (const anchorUrl of [undefined, "https://example.com/scene.jpg"]) {
+      const body = seedanceRequest({
+        model,
+        providerModel: "test-seedance",
+        duration: 4,
+        videoUri: "asset://source",
+        characterUrl: "https://example.com/sheet.jpg",
+        anchorUrl,
+        target: "performer",
+        prompt: direction,
+        resolution: "480p",
+        preserveAudio: true,
+      });
+      const text = body.content[0].text as string;
+      prompts.push(text);
+      assert.match(
+        text,
+        /source changes in camera distance and airborne motion/,
+      );
+      assert.match(text, /do not freeze placement or pin the feet/);
+      if (anchorUrl) {
+        assert.match(text, /body proportions or clothing, follow Image 1/);
+        assert.match(text, /camera, framing or placement, follow Video 1/);
+      }
+    }
+  }
+  assert.match(
+    image.prompt,
+    /Image 2 controls the source pose, camera, framing and placement/,
+  );
+  for (const text of prompts) {
+    assert.match(text, /scene placement and apparent distance from the camera/);
+    assert.match(text, /floor-contact locations when grounded/);
+    assert.match(text, /do not enlarge.*foreground, zoom or reframe/);
+    assert.match(text, /each visible clothing layer from Image 1/);
+    assert.match(text, /sleeve length and coverage/);
+    assert.match(
+      text,
+      /sleeveless outer garment does not remove an underlayer's sleeves/,
+    );
+    assert.match(
+      text,
+      /Do not copy the source subject's clothing or exposed skin unless requested/,
+    );
+    assert.match(text, /explicit changes override/);
+    assert.ok(text.endsWith(JSON.stringify(direction)));
+    assert.doesNotMatch(text, /green trousers|black leather|bowl-cut|mustache/);
+    assert.equal(text.match(/head-to-body ratio/g)?.length, 1);
+  }
+});
+
 test("Seedance editing uses the portrait asset and image references with adaptive timing", () => {
   const body = seedanceRequest({
     model: "seedance-2.5",
@@ -90,7 +232,7 @@ test("Seedance editing uses the portrait asset and image references with adaptiv
   );
   assert.match(
     prepared.content[0].text as string,
-    /character's proportions from Image 1/,
+    /If Image 2 conflicts with identity, body proportions or clothing, follow Image 1/,
   );
 });
 
