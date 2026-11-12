@@ -4,7 +4,61 @@ A local, single-user video transformation studio with four workflows: **Characte
 
 The studio opens without accounts, login, cookies, or a database. Next.js 16, React 19, and a separate Node/FFmpeg worker share a durable JSON workspace on this computer. Live generation uses private BytePlus TOS and Virtual Portrait. **Only Character Swap uses Meta SAM; the other three workflows use the prepared original video.**
 
-[Choose a workflow](#choose-a-workflow) · [Run locally](#run-locally) · [Use the studio](#use-the-studio) · [Generation flows](#workflow-generation-flows) · [Architecture](#architecture) · [API examples](#submit-a-take-through-the-api) · [Provider setup](#provider-configuration) · [Scope and limits](#scope-and-limits)
+[Cloud architecture](#cloud-architecture) · [Choose a workflow](#choose-a-workflow) · [Run locally](#run-locally) · [Use the studio](#use-the-studio) · [Generation flows](#workflow-generation-flows) · [Architecture](#architecture) · [API examples](#submit-a-take-through-the-api) · [Provider setup](#provider-configuration) · [Scope and limits](#scope-and-limits)
+
+## Cloud architecture
+
+**Seed Genjutsu uses a hybrid architecture: local application compute and state, with managed cloud storage and AI inference.** It is not currently a cloud-hosted, multi-user service. All four workflows share one Next.js web server and a separate Node/FFmpeg worker on the same computer, either as native processes or as two Docker Compose services sharing a persistent volume.
+
+```mermaid
+flowchart TB
+    Client["Browser or local API client"]
+
+    subgraph Local["Local studio - one host"]
+        Web["Next.js web server"]
+        State[("Shared MEDIA_ROOT<br/>JSON queue, leases and provider IDs<br/>Media cache and mask checkpoints")]
+        Worker["Node worker + FFmpeg"]
+        Web <-->|Media IDs and take state| State
+        State <-->|Claim work and save results| Worker
+    end
+
+    subgraph BytePlus["BytePlus cloud services"]
+        TOS[("Private TOS bucket")]
+        Portrait["Virtual Portrait<br/>Video registration"]
+        Ark["ModelArk<br/>Seedance, DeepSeek and Seedream"]
+    end
+
+    subgraph Meta["Meta cloud service"]
+        SAM["SAM 3.1<br/>Subject tracking"]
+    end
+
+    Client <-->|Loopback HTTP :3107| Web
+    Web -->|HTTPS: store uploads| TOS
+    Client -.->|HTTPS: signed media reads| TOS
+    Worker <-->|HTTPS: read and store media| TOS
+    Worker <-->|HTTPS: register video and poll Active| Portrait
+    Worker <-->|HTTPS: inference requests and task polling| Ark
+    Worker <-->|HTTPS: inline clip and streamed masks, swap only| SAM
+    Web -.->|HTTPS: optional prompt enhancement| Ark
+    Portrait -->|Signed video read| TOS
+    Ark -->|Signed reference reads| TOS
+```
+
+| Component | Responsibility |
+| --------- | -------------- |
+| Local web server | Studio UI, upload/job APIs, approval, progress polling, and media delivery. |
+| Local worker | FFmpeg preparation, workflow routing, provider submission/polling, and final audio processing. |
+| Local persistent workspace | `MEDIA_ROOT/workspace.json` stores jobs, events, leases, and accepted provider IDs using file locks and atomic writes. Media and SAM checkpoints share the same directory. No database or separate queue service is required. |
+| Private BytePlus TOS | Stores uploaded, prepared, and generated media for live workflows. Providers and browsers read expiring signed URLs; local files remain a media cache. |
+| BytePlus Virtual Portrait | Registers the prepared original video, or the masked video for Character Swap. The worker waits for `Active`, then sends its `asset://` URI to Seedance. |
+| BytePlus ModelArk | Seedance 2/2.5 generates video; DeepSeek refines and verifies swap subjects and optionally enhances prompts; Seedream optionally prepares swap scene images. |
+| Meta SAM 3.1 | Character Swap only: receives inline prepared-video bytes and streams subject masks for local FFmpeg rendering. Other workflows do not call Meta. |
+
+**Security and networking.** The studio exposes only loopback access; cloud calls are outbound HTTPS and completion is polled, so no public callback endpoint is needed. `BYTEPLUS_API_KEY` authenticates ModelArk; a separate IAM AK/SK pair, optionally with an STS session token, signs TOS and Virtual Portrait requests. `META_API_KEY` is swap-only. Credentials stay in server/worker environments. TOS uploads request private ACLs and AES256 server-side encryption; signed GET URLs expire after six hours. Use a public TOS endpoint for signed reads, not a public bucket. TOS and Virtual Portrait default to `ap-southeast-1`; see [provider configuration](#provider-configuration).
+
+**Cloud-hosting boundary.** The supplied deployment is [Docker Compose](compose.yaml) with web, worker, and one shared media volume, not a managed cloud application stack. Keep it local as shipped: there is no login, tenant isolation, or multi-host coordination. Shared cloud hosting requires authentication and authorization, HTTPS ingress with revised origin checks, and durable tenant-aware job/metadata storage before scaling across hosts. These are [future requirements, not implemented infrastructure](docs/future-auth-and-database.md). Back up the local workspace as well as TOS objects; the bucket alone does not preserve job state.
+
+This view reflects the repository implementation, not a live cloud resource inventory. Sources: [container runtime](Dockerfile), [storage and signed URLs](src/server/storage.ts), [provider clients](src/server/providers.ts), [worker](scripts/worker.ts), [local request boundary](src/server/http.ts), and [environment defaults](src/env.ts). The [architecture sequence](#architecture) below traces an individual take.
 
 ## Choose a workflow
 
@@ -234,38 +288,7 @@ flowchart TD
 
 ## Architecture
 
-**All four workflows share the same local web/worker architecture.** The web server and worker run on the same machine and coordinate through `MEDIA_ROOT`, not an in-memory queue or a database. This view shows live generation with private BytePlus TOS storage.
-
-```mermaid
-flowchart TB
-    Client["Browser or local API client"]
-
-    subgraph Local["Local studio"]
-        Web["Next.js web server<br/>Uploads, take API and media routes"]
-        State[("Shared MEDIA_ROOT<br/>JSON queue, leases, provider IDs<br/>Media cache and swap mask checkpoints")]
-        Worker["Node worker + FFmpeg<br/>Prepare, route generation and finish audio<br/>Mask only for Character Swap"]
-        Web <-->|Media IDs and take state| State
-        State <-->|Claim work and save results| Worker
-    end
-
-    subgraph Hosted["Hosted services"]
-        TOS[("Private BytePlus TOS<br/>Uploads, prepared references and results")]
-        SAM["Meta SAM 3.1<br/>Subject tracking"]
-        Portrait["BytePlus Virtual Portrait<br/>Video registration and Active gate"]
-        Ark["BytePlus ModelArk<br/>DeepSeek, Seedream and Seedance"]
-    end
-
-    Client <-->|Loopback HTTP| Web
-    Web -->|Store uploads| TOS
-    Client -.->|Read signed media| TOS
-    Worker <-->|Read and store media| TOS
-    Worker <-->|Character Swap only: inline clip and streamed masks| SAM
-    Worker <-->|Signed prepared or masked video URL and asset ID| Portrait
-    Worker <-->|Seedance tasks; swap-only subject refinement, mask verification and optional Seedream| Ark
-    Web -.->|Optional prompt enhancement| Ark
-```
-
-`BYTEPLUS_API_KEY` authenticates ModelArk generation, Character Swap subject refinement and mask verification, and enhancement. The separate IAM AK/SK pair, with a session token when using STS, signs TOS and Virtual Portrait operations. `META_API_KEY` is needed only for the Character Swap masking path. Keys remain in server/worker environments; browsers receive local media IDs and expiring signed media URLs, not provider credentials. See [provider configuration](#provider-configuration).
+**All four workflows share the [hybrid cloud architecture](#cloud-architecture) introduced above.** The web server and worker coordinate through `MEDIA_ROOT`, not an in-memory queue or a database. The sequence below expands the live generation path with private BytePlus TOS storage.
 
 ### Data sequence
 
