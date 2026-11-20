@@ -1002,6 +1002,11 @@ a {
 .advanced-options {
   padding-top: 18px;
 }
+.toggle-setting > div,
+.connections-list > div > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .toggle-setting {
   display: flex;
   align-items: center;
