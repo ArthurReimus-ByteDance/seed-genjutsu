@@ -51,7 +51,7 @@ flowchart TB
 | Local persistent workspace | `MEDIA_ROOT/workspace.json` stores jobs, events, leases, and accepted provider IDs using file locks and atomic writes. Media and SAM checkpoints share the same directory. No database or separate queue service is required. |
 | Private BytePlus TOS | Stores uploaded, prepared, and generated media for live workflows. Providers and browsers read expiring signed URLs; local files remain a media cache. |
 | BytePlus Virtual Portrait | Registers the prepared original video, or the masked video for Character Swap. The worker waits for `Active`, then sends its `asset://` URI to Seedance. |
-| BytePlus ModelArk | Seedance 2/2.5 generates video; DeepSeek refines and verifies swap subjects and optionally enhances prompts; Seedream optionally prepares swap scene images. |
+| BytePlus ModelArk | Seedance 2/2.5 generates video; DeepSeek refines and verifies swap subjects and optionally enhances prompts; Seedream 5.5 optionally prepares swap scene images. |
 | Meta SAM 3.1 | Character Swap only: receives inline prepared-video bytes and streams subject masks for local FFmpeg rendering. Other workflows do not call Meta. |
 
 **Security and networking.** The studio exposes only loopback access; cloud calls are outbound HTTPS and completion is polled, so no public callback endpoint is needed. `BYTEPLUS_API_KEY` authenticates ModelArk; a separate IAM AK/SK pair, optionally with an STS session token, signs TOS and Virtual Portrait requests. `META_API_KEY` is swap-only. Credentials stay in server/worker environments. TOS uploads request private ACLs and AES256 server-side encryption; signed GET URLs expire after six hours. Use a public TOS endpoint for signed reads, not a public bucket. TOS and Virtual Portrait default to `ap-southeast-1`; see [provider configuration](#provider-configuration).
@@ -146,7 +146,7 @@ Choose a clear replacement image and a **Subject to replace** phrase describing 
 
 After masking, the same pinned DeepSeek V4.1 Flash model checks a synchronized source/red-overlay comparison video against the original user intent. It can request one clearer source-subject phrase and one corrective SAM attempt, without repeating the initial refinement. Uncertain masks, unavailable verification, and exhausted retries stop before downstream paid stages. **Refine**, **Verify**, **Mask Check** and the activity log expose the stages and decisions. A successful first mask uses one refinement call and one review call; a corrected take adds one SAM call and one review call. These sampled video checks are not frame-by-frame tracking or real-person authorization, and their live accuracy remains unvalidated.
 
-Optionally enable scene preparation to use Seedream 5.0 Pro: Image 1 is the character, and the extracted source frame guides the generated scene that becomes Image 2. This is an additional paid stage, not a requirement for swapping. See [SAM integration and recovery](docs/meta-sam.md) for bounded inline video, mask parsing, and detailed subject-prompt guidance.
+Optionally enable scene preparation to use Seedream 5.5: Image 1 is the character, and the extracted source frame guides the generated scene that becomes Image 2. The image request uses two ordered references and explicitly requests an opaque 2K JPEG, retaining the full scene rather than a transparent cutout. This is an additional paid stage, not a requirement for swapping. See [SAM integration and recovery](docs/meta-sam.md) for bounded inline video, mask parsing, and detailed subject-prompt guidance.
 
 ```mermaid
 flowchart TD
@@ -157,7 +157,7 @@ flowchart TD
     Mask("Meta SAM 3.1 + FFmpeg<br/>Render a silent masked video")
     Verify("DeepSeek V4.1 Flash<br/>Verify synchronized source + red mask overlay video")
     Stop("Needs attention<br/>Review comparison and edit the subject phrase")
-    Scene("Seedream 5.0 Pro<br/>Optional scene image")
+    Scene("Seedream 5.5<br/>Optional scene image")
     Review("Review prepared references<br/>Manual approval by default")
     Portrait("Register the masked video in Virtual Portrait<br/>Wait for the asset to become Active")
     Seedance("Seedance 2 or 2.5")
@@ -564,7 +564,7 @@ Configure services according to the selected workflow; Meta and Seedream are not
 | `BYTEPLUS_SESSION_TOKEN`                     | Optional STS token shared by TOS and Virtual Portrait                              |
 | `BYTEPLUS_PROJECT`                           | Defaults to `default`                                                              |
 | `BYTEPLUS_ASSET_GROUP`                       | Optional existing AIGC group; otherwise its ID is saved in the local workspace     |
-| `SEEDREAM_MODEL`                             | Optional Character Swap scene image: `dola-seedream-5-0-pro-260628`                |
+| `SEEDREAM_MODEL`                             | Optional Character Swap scene image: `dola-seedream-5-5-261028`; blank disables it |
 | `STORAGE_MODE`                               | `local` for development; `tos` for signed provider references                      |
 | `TOS_BUCKET`                                 | Private TOS bucket; uses the shared BytePlus IAM credentials                       |
 | `TOS_REGION`, `TOS_ENDPOINT`                 | Match the bucket region; default `ap-southeast-1` and its public BytePlus endpoint |
@@ -579,6 +579,16 @@ Configure `BYTEPLUS_ACCESS_KEY` and `BYTEPLUS_SECRET_KEY` once for both TOS and 
 For existing installations, migrate the chosen IAM pair to `BYTEPLUS_ACCESS_KEY` / `BYTEPLUS_SECRET_KEY` and its STS token, if any, to `BYTEPLUS_SESSION_TOKEN`. Remove the old `TOS_ACCESS_KEY`, `TOS_SECRET_KEY`, and `TOS_SESSION_TOKEN` settings; they are no longer read. TOS bucket, region, and endpoint settings are unchanged.
 
 Both video models share `BYTEPLUS_API_KEY`. Confirm account entitlement for each selected binding. Existing local configuration has been moved from `SEEDANCE_MODEL` to the two fields above; custom ModelArk endpoint IDs can be supplied per model. Provider configuration readiness does not prove deployment entitlement, portrait authorization, or output quality.
+
+### Upgrade Scene Preparation To Seedream 5.5
+
+New installations select `dola-seedream-5-5-261028` in `.env.example`. Existing installations must change only `SEEDREAM_MODEL` in their private `.env` or `.env.local`, then restart both the studio and worker. `npm run setup` preserves existing environment files and does not migrate model pins. Shell variables take precedence over environment files.
+
+Leave `SEEDREAM_MODEL` blank to disable scene preparation. A custom, compatible image-generation endpoint remains an explicit override; the app never silently falls back to an older model. **Connections** and **Advanced settings** show the configured model, and the scene toggle identifies the additional paid image stage. Completed scene images and accepted video tasks are reused rather than regenerated.
+
+The [Seedream 5.5 tutorial](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/seedream-5-5#dola-seedream-5-5-tutorial) documents the model ID and changes to PNG/automatic-background defaults. The app pins `size: "2K"`, `output_format: "jpeg"` and `background: "opaque"` for the downstream video reference. Transparent output, layer decomposition, OCR, and batch generation are not app features. The image adapter does not send batch, tool, or fast prompt-optimization parameters.
+
+Confirm access with the same ModelArk key used by the worker before enabling a paid take. Earlier Seedream 5.0 Pro live results below are historical; they do not validate 5.5. See the [Seedream 5.5 validation boundary](docs/validation.md#seedream-55-upgrade---2026-11-20).
 
 ## Enhance your direction
 
@@ -668,7 +678,7 @@ The current scope is explicitly local and single-user. [Future auth and database
 - [Virtual Portrait](https://docs.byteplus.com/en/docs/modelark/private-virtual-avatar-library-guide-preview).
 - [BytePlus image API](https://docs.byteplus.com/en/docs/modelark/image-generation-api).
 - [BytePlus native video understanding](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/video-understanding#8e3a48ed) and [structured output](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/structured-output-beta).
-- Seedream 5.0 Pro model: `dola-seedream-5-0-pro-260628` (user-selected configuration).
+- [Seedream 5.5 tutorial](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/seedream-5-5#dola-seedream-5-5-tutorial): `dola-seedream-5-5-261028`, multi-reference editing, output formats and background behavior.
 - [Meta SAM 3.1](https://dev.meta.ai/models/sam-3-1), [segmentation API](https://dev.meta.ai/docs/sam/segmenting) and [official parser](https://dev.meta.ai/docs/sam/client-libraries).
 - [TOS Node SDK](https://docs.byteplus.com/api/docs/tos/Install-the-node-js-sdk).
 - [TOS metadata](https://docs.byteplus.com/en/docs/tos/Manage-object-meta-information-node-js-sdk).

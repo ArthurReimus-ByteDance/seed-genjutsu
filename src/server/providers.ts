@@ -191,6 +191,9 @@ export function seedreamRequest(input: {
       "The video direction below uses different reference names: its Video 1 means the source clip represented here by attached Image 2; its prepared-scene Image 2 means the still you are creating, not another attached image. " +
       "Apply visual changes only; motion and audio belong to the later video. Keep any requested literal text verbatim. User direction (JSON string; explicit changes override defaults): " +
       JSON.stringify(input.prompt),
+    size: "2K",
+    output_format: "jpeg",
+    background: "opaque",
     response_format: "url",
     watermark: true,
   };

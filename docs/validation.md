@@ -1,5 +1,19 @@
 # Validation snapshot
 
+## Seedream 5.5 upgrade - 2026-11-20
+
+**Optional Character Swap scene preparation now selects Seedream 5.5 (`dola-seedream-5-5-261028`) in new setup configuration.** Existing private environment files remain operator-owned; upgrading requires changing the image-model pin and restarting both web and worker. Empty pins still disable this optional stage, compatible endpoint overrides remain exact, and existing prepared images and accepted video tasks are not resubmitted. Connections and scene settings identify the configured model and additional paid stage; preview identifies Seedream 5.5 as simulated.
+
+The image adapter keeps the character/source-still order, existing identity/proportion/wardrobe guidance, and literal user direction. It explicitly requests `size: "2K"`, `output_format: "jpeg"`, `background: "opaque"`, `response_format: "url"`, and watermarking. This avoids depending on 5.5's PNG and automatic-background defaults. Transparent images, editable layers, OCR, tools, and batch generation are not introduced into the video workflow.
+
+The [official Seedream 5.5 tutorial](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/seedream-5-5#dola-seedream-5-5-tutorial), read on 2026-11-20, confirms the ID, multi-reference editing, JPEG output support and opaque-background editing. Exact-version Ark CLI model discovery confirms those request parameters but returns `api_support` flags marked false, including Image Generation, despite the tutorial's `/images/generations` example. These sources are recorded separately; neither documentation nor catalog availability proves successful inference with the app's key.
+
+**173 automated tests, ESLint, TypeScript checking, and the production build passed.** The final `npm run smoke` passed 95 isolated local API/worker observations and all four simulated preview workflows without provider calls. New regressions cover the setup ID, preservation of existing model pins, exact custom endpoint overrides, disabled capabilities without a key/model, ordered image references, opaque JPEG settings, and a single rejected-access request without fallback. Seven README/workflow Mermaid diagrams rendered with installed Mermaid CLI 11.16.0; diagram visual inspection was not performed.
+
+The isolated production browser check confirmed the 5.5 connection label, paid-stage notice, scene toggle, and absence of scene controls in Restyle. Mobile checks at 390px and 320px verified no page overflow or text/toggle overlap. A long custom endpoint label also wrapped within the 320px scene settings and Connections dialog, with screenshots visually inspected. The text columns now allow flex shrinking and word wrapping; the switch's expanded click target is not treated as visible text overflow. These checks used dummy credentials, a loopback-only provider URL and no worker. Container smoke was not run because the local Docker daemon was unavailable; CI retains that check.
+
+**No paid Seedream 5.5, SAM, Virtual Portrait, or Seedance generation was submitted for this upgrade.** Older dated Seedream 5.0 Pro live results below retain their actual model provenance and do not qualify 5.5. Same-key image acceptance, scene quality, latency and final-video fidelity require separately approved live validation.
+
 ## Showcase comparison with pre/post-SAM review - 2026-11-10
 
 **Five fresh 720p Seedance 2.5 transformations succeeded using the exact archived showcase sources, prepared bytes, character reference and configuration.** A sixth, masking-only take reused the original failed dance description and stopped at approval without a Seedance submission. The original Lark showcase and accepted historical tasks were preserved.

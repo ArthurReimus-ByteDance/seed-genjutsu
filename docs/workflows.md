@@ -8,7 +8,7 @@ These are application workflows over BytePlus APIs, not new models or a guarante
 
 | Workflow        | Image references                                                      | Video preparation                                                                                               |
 | --------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Character Swap  | One required character image                                          | Trim, AI subject refinement, SAM tracking, gray silhouette, AI mask verification, optional Seedream scene image |
+| Character Swap  | One required character image                                          | Trim, AI subject refinement, SAM tracking, gray silhouette, AI mask verification, optional Seedream 5.5 scene image |
 | Edit Elements   | Optional object, garment, identity, character, scene, or style images | Trim and normalize the original video, without SAM                                                              |
 | Motion Transfer | At least one character, identity, or scene image                      | Trim and normalize the original movement donor, without SAM                                                     |
 | Restyle         | Optional style images; choose a local preset or custom direction      | Trim and normalize the original video, without SAM                                                              |
@@ -17,7 +17,7 @@ Element editing supports replace, add, remove, and modify operations. Wardrobe c
 
 Reference order defines **Image 1, Image 2, ...** in both enhancement and generation. Roles define how the model should interpret each image. New workflows allow at most 30 references and reject duplicate image IDs, unknown roles, and missing media records.
 
-At review, new workflows show the **prepared original video**, not a masked performance. Review the clip, reference order/roles, and style settings before approval. Optional Seedream scene preparation remains character-swap-only.
+At review, new workflows show the **prepared original video**, not a masked performance. Review the clip, reference order/roles, and style settings before approval. Optional Seedream 5.5 scene preparation remains character-swap-only and adds a paid image stage. It receives the character as Image 1 and the source still as Image 2, then returns an opaque 2K JPEG for the later video request. [Existing installations must update their private model pin and restart both processes](../README.md#upgrade-scene-preparation-to-seedream-55); empty pins disable the stage and explicit compatible endpoint overrides are retained.
 
 ## Routing
 
@@ -32,7 +32,7 @@ flowchart TD
     Refine -->|Ambiguous, missing or unavailable| Attention
     Mode -->|No| Original["Use prepared original video"]
     Mask --> Verify["DeepSeek V4.1 Flash video mask verification"]
-    Verify -->|Pass| Scene["Optional Seedream scene image"]
+    Verify -->|Pass| Scene["Optional Seedream 5.5 scene image"]
     Verify -->|One clear description correction| Mask
     Verify -->|Uncertain or retries exhausted| Attention["Needs attention - no generation"]
     Scene --> Review{"Manual review enabled?"}
@@ -156,6 +156,7 @@ Temporary STS credentials were injected into an isolated runtime, not persisted.
 
 ## References
 
+- [Seedream 5.5 model and image-editing behavior](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/seedream-5-5#dola-seedream-5-5-tutorial)
 - [Seedance 2.5 task and input constraints](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/seedance-2-5)
 - [BytePlus portrait-asset guidance](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/seedance-portrait-asset-guide)
 - [Video task API](https://ai.byteplus.com/ark/region:ap-southeast-1/docs/create-video-generation-task-api)

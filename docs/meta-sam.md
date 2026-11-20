@@ -69,7 +69,7 @@ Before the external POST, the worker persists its existing submission marker. Me
 
 An interrupted request without a completed checkpoint becomes `needs_attention`. It is not resubmitted automatically. A confirmed 429 rejection may be retried after a delay; unknown submissions and server failures require manual inspection. In-flight legacy fal takes also stop for inspection rather than being submitted to a different provider. Cancelling a take aborts the local stream/render when the worker next renews its lease; provider billing or remote completion may continue.
 
-TOS, the optional Seedream 5.0 Pro branch, reference approval, Virtual Portrait and Seedance remain the downstream stages. A silhouette is a video reference, not a native Seedance inpainting mask; representative output quality remains an evaluation task.
+TOS, the optional Seedream 5.5 branch, reference approval, Virtual Portrait and Seedance remain the downstream stages. Scene preparation uses `SEEDREAM_MODEL=dola-seedream-5-5-261028` with the character then source still as ordered references, returning an opaque 2K JPEG. Leave the model blank to skip this additional paid stage. A silhouette is a video reference, not a native Seedance inpainting mask; representative output quality remains an evaluation task. See [upgrade and override handling](../README.md#upgrade-scene-preparation-to-seedream-55).
 
 ## AI source-subject refinement
 

@@ -17,6 +17,8 @@ const run = promisify(execFile);
 const project = process.cwd();
 
 test("setup preserves existing .env or .env.local instead of masking their configuration", async () => {
+  const existingConfiguration =
+    "BYTEPLUS_API_KEY=fixture-existing\nSEEDREAM_MODEL=dola-seedream-5-0-pro-260628\n";
   for (const files of [[], [".env"], [".env.local"], [".env", ".env.local"]]) {
     const root = await mkdtemp(path.join(tmpdir(), "seed-setup-"));
     try {
@@ -27,7 +29,7 @@ test("setup preserves existing .env or .env.local instead of masking their confi
       for (const file of files)
         await writeFile(
           path.join(root, file),
-          "BYTEPLUS_API_KEY=fixture-existing\n",
+          existingConfiguration,
         );
       await run(process.execPath, [path.join(project, "scripts/setup.mjs")], {
         cwd: root,
@@ -36,7 +38,7 @@ test("setup preserves existing .env or .env.local instead of masking their confi
       for (const file of files) {
         assert.equal(
           await readFile(path.join(root, file), "utf8"),
-          "BYTEPLUS_API_KEY=fixture-existing\n",
+          existingConfiguration,
         );
       }
       if (files.length === 0) {

@@ -78,7 +78,8 @@ import {
   type StylePresetId,
 } from "@/lib/workflows";
 import { StudioLoading } from "./studio/loading";
-import { APP_NAME, SEEDREAM_NAME } from "@/lib/branding";
+import { APP_NAME } from "@/lib/branding";
+import { seedreamModelLabel } from "@/lib/image-models";
 import {
   DEFAULT_VIDEO_MODEL,
   videoModels,
@@ -1256,8 +1257,8 @@ export function Studio({
                       </strong>
                       <p>
                         {capabilities.data?.image
-                          ? "Optional · preview your character in the scene."
-                          : `Optional · ${SEEDREAM_NAME} needs setup.`}
+                          ? `Optional · ${seedreamModelLabel(capabilities.data.seedreamModel)} scene preview · adds a paid image stage.`
+                          : `Optional · ${seedreamModelLabel(capabilities.data?.seedreamModel)} needs setup.`}
                       </p>
                     </div>
                     <Switch
@@ -1515,9 +1516,12 @@ export function Studio({
                     ready: capabilities.data?.storage,
                   },
                   {
-                    name: SEEDREAM_NAME,
-                    description: "Optional scene-image preparation",
+                    name: seedreamModelLabel(capabilities.data?.seedreamModel),
+                    description: swap
+                      ? "Optional scene-image preparation · adds a paid image stage"
+                      : "Character swaps only · not needed for this workflow",
                     ready: capabilities.data?.image,
+                    optional: !swap,
                   },
                   {
                     name: "Prompt enhancement",

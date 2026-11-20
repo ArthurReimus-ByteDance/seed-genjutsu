@@ -622,6 +622,7 @@ test("preview capability and preset discovery do not claim model quality qualifi
   const response = await request("capabilities");
   assert.equal(response.status, 200);
   const capabilities = capabilitySchema.parse(response.body);
+  assert.equal(capabilities.seedreamModel, "Seedream 5.5 · simulated");
   assert.equal(capabilities.workflows.length, 4);
   for (const workflow of capabilities.workflows) {
     assert.equal(workflow.requiresSam, workflow.id === "character_swap");
